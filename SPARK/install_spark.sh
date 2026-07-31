@@ -3,22 +3,76 @@ set -euo pipefail
 
 SPARK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${SPARK_DIR}/.venv"
+MODE="user"
 
-if command -v module >/dev/null 2>&1; then
-    module --force purge
-    module load StdEnv/2023 python/3.10.13
+if [[ "${1:-}" == "--developer" ]]; then
+    MODE="developer"
+elif [[ $# -gt 0 ]]; then
+    echo "Usage: bash install_spark.sh [--developer]"
+    exit 1
 fi
 
-python3 -m venv "${VENV_DIR}"
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: python3 was not found."
+    echo "Load or install Python 3.10 or newer, then rerun this script."
+    exit 1
+fi
+
+PYTHON_VERSION="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+
+python3 - <<'PY'
+import sys
+
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        f"ERROR: Python 3.10 or newer is required; found {sys.version.split()[0]}"
+    )
+PY
+
+echo "SPARK directory : ${SPARK_DIR}"
+echo "Python version  : ${PYTHON_VERSION}"
+echo "Install mode    : ${MODE}"
+
+if [[ -d "${VENV_DIR}" ]]; then
+    echo "Existing environment found: ${VENV_DIR}"
+else
+    echo "Creating virtual environment..."
+    python3 -m venv "${VENV_DIR}"
+fi
+
 source "${VENV_DIR}/bin/activate"
 
 python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r "${SPARK_DIR}/requirements.txt"
 
-python -m ipykernel install --user \
-    --name spark-python \
-    --display-name "SPARK Python"
+if [[ "${MODE}" == "developer" ]]; then
+    python -m pip install -r "${SPARK_DIR}/requirements-dev.txt"
 
-echo "SPARK environment installed successfully."
-echo "Activate with:"
-echo "source ${VENV_DIR}/bin/activate"
+    python -m ipykernel install --user \
+        --name spark-python \
+        --display-name "SPARK Python"
+else
+    python -m pip install -r "${SPARK_DIR}/requirements.txt"
+fi
+
+python - <<'PY'
+import joblib
+import nibabel
+import numpy
+import scipy
+import sklearn
+
+print("SPARK dependency verification passed.")
+print("NumPy       :", numpy.__version__)
+print("SciPy       :", scipy.__version__)
+print("scikit-learn:", sklearn.__version__)
+print("NiBabel     :", nibabel.__version__)
+print("Joblib      :", joblib.__version__)
+PY
+
+echo ""
+echo "SPARK installation completed."
+echo "Environment: ${VENV_DIR}"
+
+if [[ "${MODE}" == "developer" ]]; then
+    echo "Jupyter kernel: SPARK Python"
+fi
