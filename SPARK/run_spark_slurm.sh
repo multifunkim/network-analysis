@@ -38,9 +38,15 @@ python_module="python/3.10.13"
 # AUTOMATIC PATHS
 # ============================================================
 
-SPARK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SPARK_DIR="${SLURM_SUBMIT_DIR}"
 VENV_DIR="${SPARK_DIR}/.venv"
 PIPELINE="${SPARK_DIR}/pipeline_steps1_6.py"
+
+if [[ ! -f "${SPARK_DIR}/pipeline_steps1_6.py" ]]; then
+    echo "ERROR: Submit this job from the SPARK directory."
+    echo "Current submission directory: ${SPARK_DIR}"
+    exit 1
+fi
 
 # Use the CPUs assigned by SLURM
 max_parallel_jobs="${SLURM_CPUS_PER_TASK:-1}"
