@@ -154,11 +154,11 @@ For each subject SPARK generates
 ```
 Subject/
 
-    step1/
-    step2/
-    step3/
-    step4/
-    step5/
+    step1.log/
+    step2.log/
+    step3.log/
+    step4.log/
+    step5.log/
 
     KMAP_Subject/
 
