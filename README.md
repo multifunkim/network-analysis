@@ -172,5 +172,3 @@ Subject/
 ---
 
 # Citation
-
-Citation information will be added after publication.
