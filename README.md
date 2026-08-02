@@ -88,7 +88,7 @@ sbatch run_spark_slurm.sh
 
 # Configuration
 
-Before running SPARK, update the following variables:
+Before running SPARK, update the following variables inside the run_spark.sh:
 
 ```bash
 input_dir="/path/to/input"
