@@ -163,7 +163,7 @@ Subject/
     KMAP_Subject/
 
         k_hubness_Subject.nii.gz
-
+        atom_000.nii.gz
         atom_001.nii.gz
         atom_002.nii.gz
         ...
