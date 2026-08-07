@@ -35,7 +35,7 @@ if [[ -d "${VENV_DIR}" ]]; then
     echo "Existing virtual environment found."
 else
     echo "Creating virtual environment..."
-    python3 -m venv "${VENV_DIR}"
+    python3.11 -m venv "${VENV_DIR}"
 fi
 
 source "${VENV_DIR}/bin/activate"
