@@ -1,6 +1,6 @@
 # SPARK
 
-**SPARK** is a Python implementation for identifying resting-state functional networks from fMRI data using sparse dictionary learning and K-hubness analysis.
+**SPARK** is a Python implementation for identifying resting-state functional networks from fMRI data using sparse dictionary learning and K-hubness analysis
 
 
 ## Repository Structure
