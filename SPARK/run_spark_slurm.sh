@@ -15,10 +15,14 @@ set -uo pipefail
 # USER CONFIGURATION
 # ============================================================
 
-input_dir="/path/to/input"
-mask_path="/path/to/mask.nii.gz"    # Required only for NIfTI input and Ignored for GIFTI input.
+# Can be either:
+#   1. A single .nii / .nii.gz / .func.gii file
+#   2. A directory containing supported input files
+input_path="/path/to/input_file_or_directory"
+mask_path="/path/to/mask.nii.gz"   # Required only for NIfTI input and ignored for GIFTI input.
 output_base="/path/to/output"
 
+# Used only when input_path is a directory.
 # Filename suffix before:
 #   .nii
 #   .nii.gz
@@ -55,7 +59,7 @@ if [[ ! -f "${PIPELINE}" ]]; then
     exit 1
 fi
 
-# Use the CPUs assigned by SLURM
+# Use CPUs assigned by SLURM
 max_parallel_jobs="${SLURM_CPUS_PER_TASK:-1}"
 
 # ============================================================
@@ -78,11 +82,6 @@ if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
     exit 1
 fi
 
-if [[ ! -d "${input_dir}" ]]; then
-    echo "ERROR: Input directory not found: ${input_dir}"
-    exit 1
-fi
-
 mkdir -p "${output_base}"
 
 source "${VENV_DIR}/bin/activate"
@@ -98,34 +97,96 @@ cd "${SPARK_DIR}"
 echo "============================================================"
 echo "SPARK SLURM job"
 echo "============================================================"
-echo "Host            : $(hostname)"
-echo "Python          : $(which python)"
-echo "Input directory : ${input_dir}"
-echo "Mask            : ${mask_path} (NIfTI only)"
-echo "Output          : ${output_base}"
-echo "Parallel jobs   : ${max_parallel_jobs}"
+echo "Host          : $(hostname)"
+echo "Python        : $(which python)"
+echo "Input path    : ${input_path}"
+echo "Mask          : ${mask_path} (NIfTI only)"
+echo "Output        : ${output_base}"
+echo "Parallel jobs : ${max_parallel_jobs}"
 echo "============================================================"
 
 # ============================================================
-# FIND INPUT FILES
+# INPUT DISCOVERY
 # ============================================================
 
-mapfile -t fmri_files < <(
-    find "${input_dir}" -maxdepth 1 -type f \
-        \( \
-            -name "*${suffix}.nii" \
-            -o -name "*${suffix}.nii.gz" \
-            -o -name "*${suffix}.func.gii" \
-        \) \
-        | sort
-)
+fmri_files=()
+
+if [[ -f "${input_path}" ]]; then
+
+    # --------------------------------------------------------
+    # SINGLE-FILE MODE
+    # --------------------------------------------------------
+
+    case "${input_path}" in
+
+        *.nii|*.nii.gz|*.func.gii)
+
+            fmri_files=(
+                "${input_path}"
+            )
+
+            ;;
+
+        *)
+
+            echo "ERROR: Unsupported input file:"
+            echo "  ${input_path}"
+            echo ""
+            echo "Supported formats:"
+            echo "  .nii"
+            echo "  .nii.gz"
+            echo "  .func.gii"
+
+            deactivate
+            exit 1
+
+            ;;
+
+    esac
+
+elif [[ -d "${input_path}" ]]; then
+
+    # --------------------------------------------------------
+    # DIRECTORY MODE
+    # --------------------------------------------------------
+
+    mapfile -t fmri_files < <(
+        find "${input_path}" -maxdepth 1 -type f \
+            \( \
+                -name "*${suffix}.nii" \
+                -o -name "*${suffix}.nii.gz" \
+                -o -name "*${suffix}.func.gii" \
+            \) \
+            | sort
+    )
+
+else
+
+    echo "ERROR: Input path not found:"
+    echo "  ${input_path}"
+
+    deactivate
+    exit 1
+
+fi
+
+# ============================================================
+# CHECK DISCOVERED FILES
+# ============================================================
 
 if [[ ${#fmri_files[@]} -eq 0 ]]; then
-    echo "ERROR: No supported fMRI files found in: ${input_dir}"
-    echo "Searched for:"
-    echo "  *${suffix}.nii"
-    echo "  *${suffix}.nii.gz"
-    echo "  *${suffix}.func.gii"
+
+    echo "ERROR: No supported fMRI files found."
+    echo "Input path: ${input_path}"
+
+    if [[ -d "${input_path}" ]]; then
+        echo ""
+        echo "Directory mode searched for:"
+        echo "  *${suffix}.nii"
+        echo "  *${suffix}.nii.gz"
+        echo "  *${suffix}.func.gii"
+    fi
+
     deactivate
     exit 1
 fi
@@ -170,28 +231,47 @@ for fmri_file_path in "${fmri_files[@]}"; do
 
     else
 
-        echo "ERROR: Unsupported file format: ${fmri_file}"
+        echo "ERROR: Unsupported file format:"
+        echo "  ${fmri_file}"
+
         continue
 
     fi
 
-    # Remove configured suffix from subject label
+    # --------------------------------------------------------
+    # REMOVE CONFIGURED SUFFIX
+    #
+    # Only relevant if the filename actually ends in suffix.
+    # Safe in single-file mode as well.
+    # --------------------------------------------------------
+
     subject_label="$(printf '%s' "${subject_label}" \
         | sed -E "s/${suffix}$//")"
 
     if [[ -z "${subject_label}" ]]; then
-        echo "ERROR: Could not extract subject label from ${fmri_file}"
+
+        echo "ERROR: Could not extract subject label from:"
+        echo "  ${fmri_file}"
+
         continue
+
     fi
 
     # --------------------------------------------------------
     # NIFTI MASK CHECK
     # --------------------------------------------------------
 
-    if [[ "${input_format}" == "nifti" && ! -f "${mask_path}" ]]; then
-        echo "ERROR: NIfTI input requires a valid mask:"
-        echo "  ${mask_path}"
-        continue
+    if [[ "${input_format}" == "nifti" ]]; then
+
+        if [[ ! -f "${mask_path}" ]]; then
+
+            echo "ERROR: NIfTI input requires a valid mask:"
+            echo "  ${mask_path}"
+
+            continue
+
+        fi
+
     fi
 
     # --------------------------------------------------------
@@ -212,17 +292,32 @@ for fmri_file_path in "${fmri_files[@]}"; do
     echo "Output  : ${subject_outdir}"
     echo "------------------------------------------------------------"
 
+    # --------------------------------------------------------
+    # SKIP COMPLETED
+    # --------------------------------------------------------
+
     if [[ -f "${kmap_file}" ]]; then
+
         echo "Skipping: k-hubness output already exists."
+
         continue
+
     fi
 
+    # --------------------------------------------------------
+    # SKIP LOCKED
+    # --------------------------------------------------------
+
     if [[ -f "${lock_file}" ]]; then
+
         echo "Skipping: lock file exists."
+
         continue
+
     fi
 
     mkdir -p "${subject_outdir}"
+
     touch "${lock_file}"
 
     # --------------------------------------------------------
@@ -266,19 +361,34 @@ for fmri_file_path in "${fmri_files[@]}"; do
 
     exit_code=$?
 
+    # --------------------------------------------------------
+    # REMOVE LOCK
+    # --------------------------------------------------------
+
     rm -f "${lock_file}"
+
+    # --------------------------------------------------------
+    # CHECK RESULT
+    # --------------------------------------------------------
 
     if [[ ${exit_code} -eq 0 ]]; then
 
         if [[ -f "${kmap_file}" ]]; then
+
             echo "Completed: ${subject_label}"
+
         else
-            echo "WARNING: Pipeline completed but expected output was not found:"
+
+            echo "WARNING: Pipeline completed successfully,"
+            echo "but expected k-hubness output was not found:"
             echo "  ${kmap_file}"
+
         fi
 
     else
+
         echo "Failed: ${subject_label}, exit code ${exit_code}"
+
     fi
 
 done
