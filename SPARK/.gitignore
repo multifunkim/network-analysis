@@ -1,0 +1,3 @@
+# Local launcher scripts
+run_spark_slurm_local.sh
+run_spark_local.sh
