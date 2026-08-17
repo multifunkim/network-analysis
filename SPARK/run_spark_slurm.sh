@@ -15,11 +15,22 @@ set -uo pipefail
 # USER CONFIGURATION
 # ============================================================
 
-input_dir="/path/to/input"
-mask_path="/path/to/mask.nii.gz"
+# Can be either:
+#   1. A single .nii / .nii.gz / .func.gii file
+#   2. A directory containing supported input files
+input_path="/path/to/input_file_or_directory"
+mask_path="/path/to/mask.nii.gz"   # Required only for NIfTI input and ignored for GIFTI input.
 output_base="/path/to/output"
 
-# Filename suffix before .nii or .nii.gz
+# Used only when input_path is a directory.
+# Filename suffix before:
+#   .nii
+#   .nii.gz
+#   .func.gii
+#
+# Example:
+#   sub-01_processed.nii.gz
+#   sub-01_processed.func.gii
 suffix="_processed"
 
 # SPARK parameters
@@ -42,13 +53,13 @@ SPARK_DIR="${SLURM_SUBMIT_DIR}"
 VENV_DIR="${SPARK_DIR}/.venv"
 PIPELINE="${SPARK_DIR}/pipeline_steps1_6.py"
 
-if [[ ! -f "${SPARK_DIR}/pipeline_steps1_6.py" ]]; then
+if [[ ! -f "${PIPELINE}" ]]; then
     echo "ERROR: Submit this job from the SPARK directory."
     echo "Current submission directory: ${SPARK_DIR}"
     exit 1
 fi
 
-# Use the CPUs assigned by SLURM
+# Use CPUs assigned by SLURM
 max_parallel_jobs="${SLURM_CPUS_PER_TASK:-1}"
 
 # ============================================================
@@ -71,16 +82,6 @@ if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
     exit 1
 fi
 
-if [[ ! -d "${input_dir}" ]]; then
-    echo "ERROR: Input directory not found: ${input_dir}"
-    exit 1
-fi
-
-if [[ ! -f "${mask_path}" ]]; then
-    echo "ERROR: Mask not found: ${mask_path}"
-    exit 1
-fi
-
 mkdir -p "${output_base}"
 
 source "${VENV_DIR}/bin/activate"
@@ -96,29 +97,96 @@ cd "${SPARK_DIR}"
 echo "============================================================"
 echo "SPARK SLURM job"
 echo "============================================================"
-echo "Host            : $(hostname)"
-echo "Python          : $(which python)"
-echo "Input directory : ${input_dir}"
-echo "Mask            : ${mask_path}"
-echo "Output          : ${output_base}"
-echo "Parallel jobs   : ${max_parallel_jobs}"
+echo "Host          : $(hostname)"
+echo "Python        : $(which python)"
+echo "Input path    : ${input_path}"
+echo "Mask          : ${mask_path} (NIfTI only)"
+echo "Output        : ${output_base}"
+echo "Parallel jobs : ${max_parallel_jobs}"
 echo "============================================================"
 
 # ============================================================
-# FIND INPUT FILES
+# INPUT DISCOVERY
 # ============================================================
 
-mapfile -t fmri_files < <(
-    find "${input_dir}" -maxdepth 1 -type f \
-        \( -name "*${suffix}.nii" -o -name "*${suffix}.nii.gz" \) \
-        | sort
-)
+fmri_files=()
+
+if [[ -f "${input_path}" ]]; then
+
+    # --------------------------------------------------------
+    # SINGLE-FILE MODE
+    # --------------------------------------------------------
+
+    case "${input_path}" in
+
+        *.nii|*.nii.gz|*.func.gii)
+
+            fmri_files=(
+                "${input_path}"
+            )
+
+            ;;
+
+        *)
+
+            echo "ERROR: Unsupported input file:"
+            echo "  ${input_path}"
+            echo ""
+            echo "Supported formats:"
+            echo "  .nii"
+            echo "  .nii.gz"
+            echo "  .func.gii"
+
+            deactivate
+            exit 1
+
+            ;;
+
+    esac
+
+elif [[ -d "${input_path}" ]]; then
+
+    # --------------------------------------------------------
+    # DIRECTORY MODE
+    # --------------------------------------------------------
+
+    mapfile -t fmri_files < <(
+        find "${input_path}" -maxdepth 1 -type f \
+            \( \
+                -name "*${suffix}.nii" \
+                -o -name "*${suffix}.nii.gz" \
+                -o -name "*${suffix}.func.gii" \
+            \) \
+            | sort
+    )
+
+else
+
+    echo "ERROR: Input path not found:"
+    echo "  ${input_path}"
+
+    deactivate
+    exit 1
+
+fi
+
+# ============================================================
+# CHECK DISCOVERED FILES
+# ============================================================
 
 if [[ ${#fmri_files[@]} -eq 0 ]]; then
-    echo "ERROR: No input fMRI files found in: ${input_dir}"
-    echo "Searched for:"
-    echo "  *${suffix}.nii"
-    echo "  *${suffix}.nii.gz"
+
+    echo "ERROR: No supported fMRI files found."
+    echo "Input path: ${input_path}"
+
+    if [[ -d "${input_path}" ]]; then
+        echo ""
+        echo "Directory mode searched for:"
+        echo "  *${suffix}.nii"
+        echo "  *${suffix}.nii.gz"
+        echo "  *${suffix}.func.gii"
+    fi
+
     deactivate
     exit 1
 fi
@@ -133,62 +201,196 @@ for fmri_file_path in "${fmri_files[@]}"; do
 
     fmri_file="$(basename "${fmri_file_path}")"
 
-    subject_label="$(printf '%s' "${fmri_file}" | sed -E 's/\.nii(\.gz)?$//')"
-    subject_label="$(printf '%s' "${subject_label}" | sed -E "s/${suffix}$//")"
+    # --------------------------------------------------------
+    # DETECT INPUT FORMAT
+    # --------------------------------------------------------
 
-    if [[ -z "${subject_label}" ]]; then
-        echo "ERROR: Could not extract subject label from ${fmri_file}"
+    if [[ "${fmri_file}" == *.func.gii ]]; then
+
+        input_format="gifti"
+        output_extension="func.gii"
+
+        subject_label="$(printf '%s' "${fmri_file}" \
+            | sed -E 's/\.func\.gii$//')"
+
+    elif [[ "${fmri_file}" == *.nii.gz ]]; then
+
+        input_format="nifti"
+        output_extension="nii.gz"
+
+        subject_label="$(printf '%s' "${fmri_file}" \
+            | sed -E 's/\.nii\.gz$//')"
+
+    elif [[ "${fmri_file}" == *.nii ]]; then
+
+        input_format="nifti"
+        output_extension="nii.gz"
+
+        subject_label="$(printf '%s' "${fmri_file}" \
+            | sed -E 's/\.nii$//')"
+
+    else
+
+        echo "ERROR: Unsupported file format:"
+        echo "  ${fmri_file}"
+
         continue
+
     fi
 
+    # --------------------------------------------------------
+    # REMOVE CONFIGURED SUFFIX
+    #
+    # Only relevant if the filename actually ends in suffix.
+    # Safe in single-file mode as well.
+    # --------------------------------------------------------
+
+    subject_label="$(printf '%s' "${subject_label}" \
+        | sed -E "s/${suffix}$//")"
+
+    if [[ -z "${subject_label}" ]]; then
+
+        echo "ERROR: Could not extract subject label from:"
+        echo "  ${fmri_file}"
+
+        continue
+
+    fi
+
+    # --------------------------------------------------------
+    # NIFTI MASK CHECK
+    # --------------------------------------------------------
+
+    if [[ "${input_format}" == "nifti" ]]; then
+
+        if [[ ! -f "${mask_path}" ]]; then
+
+            echo "ERROR: NIfTI input requires a valid mask:"
+            echo "  ${mask_path}"
+
+            continue
+
+        fi
+
+    fi
+
+    # --------------------------------------------------------
+    # OUTPUT PATHS
+    # --------------------------------------------------------
+
     subject_outdir="${output_base}/${subject_label}"
-    kmap_file="${subject_outdir}/KMAP_${subject_label}/k_hubness_${subject_label}.nii.gz"
+
+    kmap_file="${subject_outdir}/KMAP_${subject_label}/k_hubness_${subject_label}.${output_extension}"
+
     lock_file="${subject_outdir}/.lock"
 
     echo ""
     echo "------------------------------------------------------------"
     echo "Subject : ${subject_label}"
+    echo "Format  : ${input_format}"
     echo "Input   : ${fmri_file_path}"
     echo "Output  : ${subject_outdir}"
     echo "------------------------------------------------------------"
 
+    # --------------------------------------------------------
+    # SKIP COMPLETED
+    # --------------------------------------------------------
+
     if [[ -f "${kmap_file}" ]]; then
+
         echo "Skipping: k-hubness output already exists."
+
         continue
+
     fi
 
+    # --------------------------------------------------------
+    # SKIP LOCKED
+    # --------------------------------------------------------
+
     if [[ -f "${lock_file}" ]]; then
+
         echo "Skipping: lock file exists."
+
         continue
+
     fi
 
     mkdir -p "${subject_outdir}"
+
     touch "${lock_file}"
 
-    python "${PIPELINE}" \
-        --fmri_path            "${fmri_file_path}" \
-        --mask_path            "${mask_path}" \
-        --output_dir           "${subject_outdir}" \
-        --network_scales       "${network_scales[@]}" \
-        --subsample_factor     "${subsample_factor}" \
-        --nb_samps             "${nb_samps}" \
-        --block_window_length  "${block_window_length[@]}" \
-        --max_parallel_jobs    "${max_parallel_jobs}" \
-        --n_iter               "${n_iter}" \
-        --pvalue               "${pvalue}" \
-        --min_voxels           "${min_voxels}" \
-        --steps                all \
-        --step2_extra          --coding omp --c_bits 8 --rowmean
+    # --------------------------------------------------------
+    # RUN SPARK
+    # --------------------------------------------------------
+
+    if [[ "${input_format}" == "nifti" ]]; then
+
+        python "${PIPELINE}" \
+            --fmri_path            "${fmri_file_path}" \
+            --mask_path            "${mask_path}" \
+            --output_dir           "${subject_outdir}" \
+            --network_scales       "${network_scales[@]}" \
+            --subsample_factor     "${subsample_factor}" \
+            --nb_samps             "${nb_samps}" \
+            --block_window_length  "${block_window_length[@]}" \
+            --max_parallel_jobs    "${max_parallel_jobs}" \
+            --n_iter               "${n_iter}" \
+            --pvalue               "${pvalue}" \
+            --min_voxels           "${min_voxels}" \
+            --steps                all \
+            --step2_extra          --coding omp --c_bits 8 --rowmean
+
+    else
+
+        python "${PIPELINE}" \
+            --fmri_path            "${fmri_file_path}" \
+            --output_dir           "${subject_outdir}" \
+            --network_scales       "${network_scales[@]}" \
+            --subsample_factor     "${subsample_factor}" \
+            --nb_samps             "${nb_samps}" \
+            --block_window_length  "${block_window_length[@]}" \
+            --max_parallel_jobs    "${max_parallel_jobs}" \
+            --n_iter               "${n_iter}" \
+            --pvalue               "${pvalue}" \
+            --min_voxels           "${min_voxels}" \
+            --steps                all \
+            --step2_extra          --coding omp --c_bits 8 --rowmean
+
+    fi
 
     exit_code=$?
 
+    # --------------------------------------------------------
+    # REMOVE LOCK
+    # --------------------------------------------------------
+
     rm -f "${lock_file}"
 
+    # --------------------------------------------------------
+    # CHECK RESULT
+    # --------------------------------------------------------
+
     if [[ ${exit_code} -eq 0 ]]; then
-        echo "Completed: ${subject_label}"
+
+        if [[ -f "${kmap_file}" ]]; then
+
+            echo "Completed: ${subject_label}"
+
+        else
+
+            echo "WARNING: Pipeline completed successfully,"
+            echo "but expected k-hubness output was not found:"
+            echo "  ${kmap_file}"
+
+        fi
+
     else
+
         echo "Failed: ${subject_label}, exit code ${exit_code}"
+
     fi
+
 done
 
 deactivate

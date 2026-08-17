@@ -14,7 +14,7 @@ any **--rowmean**  | (unchanged)   | **row-mean (K)  ➜  min L**
 Use --step2_extra in the pipeline to forward extra flags, e.g.  
     --step2_extra --coding omp --c_bits 8 --rowmean
 """
-
+import warnings
 import os, argparse, logging, math, numpy as np
 from scipy.io import loadmat, savemat
 from sklearn.linear_model import orthogonal_mp
@@ -50,7 +50,18 @@ def threshold_code(D, y, L):
     return a
 
 def omp_code(D, y, L):
-    return orthogonal_mp(D, y, n_nonzero_coefs=L)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Orthogonal matching pursuit ended prematurely due to linear dependence in the dictionary.*",
+            category=RuntimeWarning,
+        )
+
+        return orthogonal_mp(
+            D,
+            y,
+            n_nonzero_coefs=L
+        )
 
 def mini_ksvd(X, K, L, n_iter, coding):
     rng = np.random.default_rng(0)
@@ -94,7 +105,12 @@ if __name__ == "__main__":
         args.c_bits = 0.0 if args.coding == "threshold" else 16.0
     logging.info("coding = %s   c_bits = %.1f   rowmean = %s",
                  args.coding, args.c_bits, args.rowmean)
-
+    if args.coding == "omp":
+    logging.info(
+        "OMP linear-dependence RuntimeWarnings are suppressed "
+        "to avoid repetitive log output; solver behavior is unchanged."
+    )
+    
     X   = loadmat(args.tseries)["tseries_sub"]          # (T, V_sub)
     Ks  = list(range(args.k_min, args.k_max + 1, args.k_step))
     MDL_rows = []
