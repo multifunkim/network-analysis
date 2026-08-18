@@ -19,7 +19,11 @@ set -uo pipefail
 #   1. A single .nii / .nii.gz / .func.gii file
 #   2. A directory containing supported input files
 input_path="/path/to/input_file_or_directory"
-mask_path="/path/to/mask.nii.gz"   # Required only for NIfTI input and ignored for GIFTI input.
+
+# Required only for NIfTI input.
+# Ignored for GIFTI input.
+mask_path="/path/to/mask.nii.gz"
+
 output_base="/path/to/output"
 
 # Used only when input_path is a directory.
@@ -28,12 +32,15 @@ output_base="/path/to/output"
 #   .nii.gz
 #   .func.gii
 #
-# Example:
+# Examples:
 #   sub-01_processed.nii.gz
 #   sub-01_processed.func.gii
 suffix="_processed"
 
-# SPARK parameters
+# ============================================================
+# SPARK PARAMETERS
+# ============================================================
+
 network_scales=(10 2 40)
 subsample_factor=8
 nb_samps=200
@@ -59,7 +66,8 @@ if [[ ! -f "${PIPELINE}" ]]; then
     exit 1
 fi
 
-# Use CPUs assigned by SLURM
+# One SLURM task uses all CPUs assigned by --cpus-per-task.
+# Step 4 uses this value for joblib parallelization.
 max_parallel_jobs="${SLURM_CPUS_PER_TASK:-1}"
 
 # ============================================================
@@ -87,22 +95,30 @@ mkdir -p "${output_base}"
 source "${VENV_DIR}/bin/activate"
 
 export PYTHONUNBUFFERED=1
+
+# Prevent nested BLAS/OpenMP threading inside each joblib worker.
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
-# Required because the current pipeline uses relative step-script paths.
+# The pipeline currently uses relative step-script paths.
 cd "${SPARK_DIR}"
+
+# ============================================================
+# JOB INFORMATION
+# ============================================================
 
 echo "============================================================"
 echo "SPARK SLURM job"
 echo "============================================================"
-echo "Host          : $(hostname)"
-echo "Python        : $(which python)"
-echo "Input path    : ${input_path}"
-echo "Mask          : ${mask_path} (NIfTI only)"
-echo "Output        : ${output_base}"
-echo "Parallel jobs : ${max_parallel_jobs}"
+echo "Host             : $(hostname)"
+echo "Python           : $(which python)"
+echo "Input path       : ${input_path}"
+echo "Mask             : ${mask_path} (NIfTI only)"
+echo "Output           : ${output_base}"
+echo "SLURM tasks      : ${SLURM_NTASKS:-unknown}"
+echo "CPUs per task    : ${SLURM_CPUS_PER_TASK:-unknown}"
+echo "Parallel jobs    : ${max_parallel_jobs}"
 echo "============================================================"
 
 # ============================================================
@@ -120,15 +136,10 @@ if [[ -f "${input_path}" ]]; then
     case "${input_path}" in
 
         *.nii|*.nii.gz|*.func.gii)
-
-            fmri_files=(
-                "${input_path}"
-            )
-
+            fmri_files=("${input_path}")
             ;;
 
         *)
-
             echo "ERROR: Unsupported input file:"
             echo "  ${input_path}"
             echo ""
@@ -139,9 +150,7 @@ if [[ -f "${input_path}" ]]; then
 
             deactivate
             exit 1
-
             ;;
-
     esac
 
 elif [[ -d "${input_path}" ]]; then
@@ -167,7 +176,6 @@ else
 
     deactivate
     exit 1
-
 fi
 
 # ============================================================
@@ -196,7 +204,7 @@ echo "Found ${#fmri_files[@]} fMRI file(s)."
 # ============================================================
 # MAIN LOOP
 # ============================================================
-pvalue=0.2
+
 for fmri_file_path in "${fmri_files[@]}"; do
 
     fmri_file="$(basename "${fmri_file_path}")"
@@ -233,28 +241,20 @@ for fmri_file_path in "${fmri_files[@]}"; do
 
         echo "ERROR: Unsupported file format:"
         echo "  ${fmri_file}"
-
         continue
-
     fi
 
     # --------------------------------------------------------
     # REMOVE CONFIGURED SUFFIX
-    #
-    # Only relevant if the filename actually ends in suffix.
-    # Safe in single-file mode as well.
     # --------------------------------------------------------
 
     subject_label="$(printf '%s' "${subject_label}" \
         | sed -E "s/${suffix}$//")"
 
     if [[ -z "${subject_label}" ]]; then
-
         echo "ERROR: Could not extract subject label from:"
         echo "  ${fmri_file}"
-
         continue
-
     fi
 
     # --------------------------------------------------------
@@ -264,12 +264,9 @@ for fmri_file_path in "${fmri_files[@]}"; do
     if [[ "${input_format}" == "nifti" ]]; then
 
         if [[ ! -f "${mask_path}" ]]; then
-
             echo "ERROR: NIfTI input requires a valid mask:"
             echo "  ${mask_path}"
-
             continue
-
         fi
 
     fi
@@ -286,10 +283,11 @@ for fmri_file_path in "${fmri_files[@]}"; do
 
     echo ""
     echo "------------------------------------------------------------"
-    echo "Subject : ${subject_label}"
-    echo "Format  : ${input_format}"
-    echo "Input   : ${fmri_file_path}"
-    echo "Output  : ${subject_outdir}"
+    echo "Subject       : ${subject_label}"
+    echo "Format        : ${input_format}"
+    echo "Input         : ${fmri_file_path}"
+    echo "Output        : ${subject_outdir}"
+    echo "Parallel jobs : ${max_parallel_jobs}"
     echo "------------------------------------------------------------"
 
     # --------------------------------------------------------
@@ -297,11 +295,8 @@ for fmri_file_path in "${fmri_files[@]}"; do
     # --------------------------------------------------------
 
     if [[ -f "${kmap_file}" ]]; then
-
         echo "Skipping: k-hubness output already exists."
-
         continue
-
     fi
 
     # --------------------------------------------------------
@@ -309,15 +304,11 @@ for fmri_file_path in "${fmri_files[@]}"; do
     # --------------------------------------------------------
 
     if [[ -f "${lock_file}" ]]; then
-
         echo "Skipping: lock file exists."
-
         continue
-
     fi
 
     mkdir -p "${subject_outdir}"
-
     touch "${lock_file}"
 
     # --------------------------------------------------------
@@ -356,7 +347,6 @@ for fmri_file_path in "${fmri_files[@]}"; do
             --min_voxels           "${min_voxels}" \
             --steps                all \
             --step2_extra          --coding omp --c_bits 8 --rowmean
-
     fi
 
     exit_code=$?
@@ -374,15 +364,11 @@ for fmri_file_path in "${fmri_files[@]}"; do
     if [[ ${exit_code} -eq 0 ]]; then
 
         if [[ -f "${kmap_file}" ]]; then
-
             echo "Completed: ${subject_label}"
-
         else
-
             echo "WARNING: Pipeline completed successfully,"
             echo "but expected k-hubness output was not found:"
             echo "  ${kmap_file}"
-
         fi
 
     else
