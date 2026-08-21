@@ -200,6 +200,7 @@ The launcher automatically
 ---
 
 # Citation
+<<<<<<< HEAD
 If you use this library for your publications, please cite as:
     
 Kangjoo Lee, Jean-Marc Lina, Jean Gotman and Christophe Grova, “SPARK: Sparsity-based analysis of reliable k-hubness and overlapping network structure in brain functional connectivity”, Neuroimage, vol. 134, pp. 434–449, April 2016, Link.
