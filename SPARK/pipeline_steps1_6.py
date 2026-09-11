@@ -35,8 +35,13 @@ import shlex
 import logging
 import argparse
 import subprocess
+import sys
 
-from spatial_io import detect_format
+from brick.spatial_io import detect_format
+
+
+SPARK_DIR = os.path.dirname(os.path.abspath(__file__))
+BRICK_DIR = os.path.join(SPARK_DIR, "brick")
 
 
 # ============================================================
@@ -366,8 +371,8 @@ def main():
     # ========================================================
 
     cmd1 = [
-        "python",
-        "step1_load_data.py",
+        sys.executable,
+        os.path.join(BRICK_DIR, "step1_load_data.py"),
 
         "--fmri",
         args.fmri_path,
@@ -405,8 +410,8 @@ def main():
     )
 
     cmd2 = [
-        "python",
-        "step2_estimate_scale.py",
+        sys.executable,
+        os.path.join(BRICK_DIR, "step2_estimate_scale.py"),
 
         "--tseries",
         mat1,
@@ -457,8 +462,8 @@ def main():
     )
 
     cmd3 = [
-        "python",
-        "step3_bootstrap.py",
+        sys.executable,
+        os.path.join(BRICK_DIR, "step3_bootstrap.py"),
 
         "--tseries",
         mat1,
@@ -494,8 +499,8 @@ def main():
     )
 
     cmd4 = [
-        "python",
-        "step4_dictionary.py",
+        sys.executable,
+        os.path.join(BRICK_DIR, "step4_dictionary.py"),
 
         "--bootstrap_dir",
         boot_dir,
@@ -545,8 +550,8 @@ def main():
         )
 
     cmd5 = [
-        "python",
-        "step5_clustering.py",
+        sys.executable,
+        os.path.join(BRICK_DIR, "step5_clustering.py"),
         "--dicts"
     ] + dicts + [
 
@@ -609,8 +614,8 @@ def main():
     # --------------------------------------------------------
 
     cmd6 = [
-        "python",
-        "step6_kmap_atoms.py",
+        sys.executable,
+        os.path.join(BRICK_DIR, "step6_kmap_atoms.py"),
 
         "--clusters",
         mat5,
