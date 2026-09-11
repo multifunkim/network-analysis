@@ -12,6 +12,59 @@
 set -uo pipefail
 
 # ============================================================
+# LOGIN-NODE UPDATE AND SUBMISSION
+# ============================================================
+
+# Run normally on the login node; inside SLURM, skip this section.
+if [[ -z "${SLURM_JOB_ID:-}" ]]; then
+    launcher_path="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+    launcher_dir="$(cd "$(dirname "${launcher_path}")" && pwd)"
+
+    if ! git -C "${launcher_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "ERROR: The SPARK launcher is not inside a Git repository."
+        echo "Launcher directory: ${launcher_dir}"
+        exit 1
+    fi
+
+    repo_root="$(git -C "${launcher_dir}" rev-parse --show-toplevel)"
+    launcher_relative="${launcher_path#"${repo_root}/"}"
+
+    echo "Checking origin/main for SPARK updates..."
+
+    if [[ -n "$(git -C "${repo_root}" status --porcelain)" ]]; then
+        echo "WARNING: Local modifications or untracked files were found."
+        echo "Automatic update skipped to protect local work."
+    elif git -C "${repo_root}" fetch --quiet origin main; then
+        if git -C "${repo_root}" switch main >/dev/null 2>&1 || \
+           git -C "${repo_root}" checkout main >/dev/null 2>&1; then
+            if git -C "${repo_root}" merge --ff-only origin/main >/dev/null; then
+                echo "SPARK main is up to date."
+            else
+                echo "WARNING: Local main cannot be fast-forwarded to origin/main."
+                echo "Automatic update skipped; no merge was created."
+            fi
+        else
+            echo "WARNING: Could not switch to main. Automatic update skipped."
+        fi
+    else
+        echo "WARNING: Could not reach origin/main."
+        echo "Continuing with the currently installed SPARK version."
+    fi
+
+    spark_commit="$(git -C "${repo_root}" rev-parse HEAD)" || exit 1
+    submitted_launcher="${repo_root}/${launcher_relative}"
+
+    echo "SPARK commit: ${spark_commit}"
+    echo "Submitting SPARK job..."
+
+    sbatch \
+        --chdir="$(dirname "${submitted_launcher}")" \
+        --export="ALL,SPARK_COMMIT=${spark_commit}" \
+        "${submitted_launcher}"
+    exit $?
+fi
+
+# ============================================================
 # USER CONFIGURATION
 # ============================================================
 
@@ -110,6 +163,7 @@ cd "${SPARK_DIR}"
 
 echo "============================================================"
 echo "SPARK SLURM job"
+echo "Commit           : ${SPARK_COMMIT:-unknown}"
 echo "============================================================"
 echo "Host             : $(hostname)"
 echo "Python           : $(which python)"
