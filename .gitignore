@@ -218,3 +218,20 @@ __marimo__/
 .streamlit/secrets.toml
 
 .DS_Store
+
+# --------------------------------------------------
+# SPARK user data and generated results
+# --------------------------------------------------
+
+# Input neuroimaging data
+inputs/*
+!inputs/.gitkeep
+
+# Masks
+masks/*
+!masks/.gitkeep
+
+# Generated outputs
+outputs/*
+!outputs/.gitkeep
+
