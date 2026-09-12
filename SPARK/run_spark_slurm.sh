@@ -11,88 +11,21 @@
 
 set -uo pipefail
 
-# ============================================================
-# LOGIN-NODE UPDATE AND SUBMISSION
-# ============================================================
-
-# Run normally on the login node; inside SLURM, skip this section.
-if [[ -z "${SLURM_JOB_ID:-}" ]]; then
-    launcher_path="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
-    launcher_dir="$(cd "$(dirname "${launcher_path}")" && pwd)"
-
-    if ! git -C "${launcher_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        echo "ERROR: The SPARK launcher is not inside a Git repository."
-        echo "Launcher directory: ${launcher_dir}"
-        exit 1
-    fi
-
-    repo_root="$(git -C "${launcher_dir}" rev-parse --show-toplevel)"
-    launcher_relative="${launcher_path#"${repo_root}/"}"
-
-    echo "Checking origin/main for SPARK updates..."
-
-    if [[ -n "$(git -C "${repo_root}" status --porcelain)" ]]; then
-        echo "WARNING: Local modifications or untracked files were found."
-        echo "Automatic update skipped to protect local work."
-    elif git -C "${repo_root}" fetch --quiet origin main; then
-        if git -C "${repo_root}" switch main >/dev/null 2>&1 || \
-           git -C "${repo_root}" checkout main >/dev/null 2>&1; then
-            if git -C "${repo_root}" merge --ff-only origin/main >/dev/null; then
-                echo "SPARK main is up to date."
-            else
-                echo "WARNING: Local main cannot be fast-forwarded to origin/main."
-                echo "Automatic update skipped; no merge was created."
-            fi
-        else
-            echo "WARNING: Could not switch to main. Automatic update skipped."
-        fi
-    else
-        echo "WARNING: Could not reach origin/main."
-        echo "Continuing with the currently installed SPARK version."
-    fi
-
-    spark_commit="$(git -C "${repo_root}" rev-parse HEAD)" || exit 1
-    submitted_launcher="${repo_root}/${launcher_relative}"
-
-    echo "SPARK commit: ${spark_commit}"
-    echo "Submitting SPARK job..."
-
-    sbatch \
-        --chdir="$(dirname "${submitted_launcher}")" \
-        --export="ALL,SPARK_COMMIT=${spark_commit}" \
-        "${submitted_launcher}"
-    exit $?
-fi
 
 # ============================================================
 # USER CONFIGURATION
 # ============================================================
 
+UPDATE_BRANCH="main"   
+
 # Can be either:
 #   1. A single .nii / .nii.gz / .func.gii file
 #   2. A directory containing supported input files
-input_path="/path/to/input_file_or_directory"
-
-# Required only for NIfTI input.
-# Ignored for GIFTI input.
-mask_path="/path/to/mask.nii.gz"
-
+input_path="/path/to/input"
+mask_path="/path/to/mask.nii.gz"   # NIfTI only
 output_base="/path/to/output"
 
-# Used only when input_path is a directory.
-# Filename suffix before:
-#   .nii
-#   .nii.gz
-#   .func.gii
-#
-# Examples:
-#   sub-01_processed.nii.gz
-#   sub-01_processed.func.gii
 suffix="_processed"
-
-# ============================================================
-# SPARK PARAMETERS
-# ============================================================
 
 network_scales=(10 2 40)
 subsample_factor=8
@@ -102,26 +35,98 @@ n_iter=30
 pvalue=0.05
 min_voxels=30
 
-# Alliance module configuration
 python_module="python/3.10.13"
+
+
+# ============================================================
+# LOGIN-NODE UPDATE AND SUBMISSION
+# ============================================================
+
+if [[ -z "${SLURM_JOB_ID:-}" ]]; then
+
+    launcher_path="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+    launcher_dir="$(cd "$(dirname "${launcher_path}")" && pwd)"
+
+    if ! git -C "${launcher_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "ERROR: The SPARK launcher is not inside a Git repository."
+        exit 1
+    fi
+
+    repo_root="$(git -C "${launcher_dir}" rev-parse --show-toplevel)"
+    launcher_relative="${launcher_path#"${repo_root}/"}"
+
+    case "${UPDATE_BRANCH}" in
+        main|development)
+            ;;
+        *)
+            echo "ERROR: UPDATE_BRANCH must be 'main' or 'development'."
+            exit 1
+            ;;
+    esac
+
+    echo "Checking origin/${UPDATE_BRANCH} for SPARK updates..."
+
+    if ! git -C "${repo_root}" diff --quiet || \
+       ! git -C "${repo_root}" diff --cached --quiet; then
+
+        echo "WARNING: Local tracked modifications were found."
+        echo "Automatic update skipped to protect local work."
+
+    elif git -C "${repo_root}" fetch --quiet origin "${UPDATE_BRANCH}"; then
+
+        if git -C "${repo_root}" switch "${UPDATE_BRANCH}" >/dev/null 2>&1 || \
+           git -C "${repo_root}" checkout "${UPDATE_BRANCH}" >/dev/null 2>&1; then
+
+            if git -C "${repo_root}" merge --ff-only "origin/${UPDATE_BRANCH}" >/dev/null; then
+                echo "SPARK ${UPDATE_BRANCH} is up to date."
+            else
+                echo "WARNING: Local ${UPDATE_BRANCH} cannot be fast-forwarded."
+                echo "Automatic update skipped."
+            fi
+
+        else
+            echo "WARNING: Could not switch to ${UPDATE_BRANCH}."
+            echo "Automatic update skipped."
+        fi
+
+    else
+        echo "WARNING: Could not reach origin/${UPDATE_BRANCH}."
+        echo "Continuing with the currently installed SPARK version."
+    fi
+
+    spark_commit="$(git -C "${repo_root}" rev-parse HEAD)" || exit 1
+    current_branch="$(git -C "${repo_root}" branch --show-current)"
+    submitted_launcher="${repo_root}/${launcher_relative}"
+
+    echo "Branch       : ${current_branch}"
+    echo "SPARK commit : ${spark_commit}"
+    echo "Submitting SPARK job..."
+
+    sbatch \
+        --chdir="$(dirname "${submitted_launcher}")" \
+        --export="ALL,SPARK_COMMIT=${spark_commit}" \
+        "${submitted_launcher}"
+
+    exit $?
+fi
+
 
 # ============================================================
 # AUTOMATIC PATHS
 # ============================================================
 
-SPARK_DIR="${SLURM_SUBMIT_DIR}"
+SPARK_DIR="$(pwd)"
 VENV_DIR="${SPARK_DIR}/.venv"
 PIPELINE="${SPARK_DIR}/pipeline_steps1_6.py"
 
 if [[ ! -f "${PIPELINE}" ]]; then
-    echo "ERROR: Submit this job from the SPARK directory."
-    echo "Current submission directory: ${SPARK_DIR}"
+    echo "ERROR: Could not find:"
+    echo "  ${PIPELINE}"
     exit 1
 fi
 
-# One SLURM task uses all CPUs assigned by --cpus-per-task.
-# Step 4 uses this value for joblib parallelization.
 max_parallel_jobs="${SLURM_CPUS_PER_TASK:-1}"
+
 
 # ============================================================
 # ENVIRONMENT
@@ -148,14 +153,12 @@ mkdir -p "${output_base}"
 source "${VENV_DIR}/bin/activate"
 
 export PYTHONUNBUFFERED=1
-
-# Prevent nested BLAS/OpenMP threading inside each joblib worker.
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
-# The pipeline currently uses relative step-script paths.
 cd "${SPARK_DIR}"
+
 
 # ============================================================
 # JOB INFORMATION
@@ -163,17 +166,17 @@ cd "${SPARK_DIR}"
 
 echo "============================================================"
 echo "SPARK SLURM job"
+echo "Branch           : ${UPDATE_BRANCH}"
 echo "Commit           : ${SPARK_COMMIT:-unknown}"
-echo "============================================================"
 echo "Host             : $(hostname)"
 echo "Python           : $(which python)"
 echo "Input path       : ${input_path}"
-echo "Mask             : ${mask_path} (NIfTI only)"
+echo "Mask             : ${mask_path}"
 echo "Output           : ${output_base}"
-echo "SLURM tasks      : ${SLURM_NTASKS:-unknown}"
 echo "CPUs per task    : ${SLURM_CPUS_PER_TASK:-unknown}"
 echo "Parallel jobs    : ${max_parallel_jobs}"
 echo "============================================================"
+
 
 # ============================================================
 # INPUT DISCOVERY
@@ -182,10 +185,6 @@ echo "============================================================"
 fmri_files=()
 
 if [[ -f "${input_path}" ]]; then
-
-    # --------------------------------------------------------
-    # SINGLE-FILE MODE
-    # --------------------------------------------------------
 
     case "${input_path}" in
 
@@ -209,10 +208,6 @@ if [[ -f "${input_path}" ]]; then
 
 elif [[ -d "${input_path}" ]]; then
 
-    # --------------------------------------------------------
-    # DIRECTORY MODE
-    # --------------------------------------------------------
-
     mapfile -t fmri_files < <(
         find "${input_path}" -maxdepth 1 -type f \
             \( \
@@ -232,8 +227,9 @@ else
     exit 1
 fi
 
+
 # ============================================================
-# CHECK DISCOVERED FILES
+# CHECK INPUT FILES
 # ============================================================
 
 if [[ ${#fmri_files[@]} -eq 0 ]]; then
@@ -243,7 +239,7 @@ if [[ ${#fmri_files[@]} -eq 0 ]]; then
 
     if [[ -d "${input_path}" ]]; then
         echo ""
-        echo "Directory mode searched for:"
+        echo "Searched for:"
         echo "  *${suffix}.nii"
         echo "  *${suffix}.nii.gz"
         echo "  *${suffix}.func.gii"
@@ -255,6 +251,7 @@ fi
 
 echo "Found ${#fmri_files[@]} fMRI file(s)."
 
+
 # ============================================================
 # MAIN LOOP
 # ============================================================
@@ -263,8 +260,9 @@ for fmri_file_path in "${fmri_files[@]}"; do
 
     fmri_file="$(basename "${fmri_file_path}")"
 
+
     # --------------------------------------------------------
-    # DETECT INPUT FORMAT
+    # INPUT FORMAT
     # --------------------------------------------------------
 
     if [[ "${fmri_file}" == *.func.gii ]]; then
@@ -295,11 +293,13 @@ for fmri_file_path in "${fmri_files[@]}"; do
 
         echo "ERROR: Unsupported file format:"
         echo "  ${fmri_file}"
+
         continue
     fi
 
+
     # --------------------------------------------------------
-    # REMOVE CONFIGURED SUFFIX
+    # SUBJECT LABEL
     # --------------------------------------------------------
 
     subject_label="$(printf '%s' "${subject_label}" \
@@ -311,8 +311,9 @@ for fmri_file_path in "${fmri_files[@]}"; do
         continue
     fi
 
+
     # --------------------------------------------------------
-    # NIFTI MASK CHECK
+    # MASK CHECK
     # --------------------------------------------------------
 
     if [[ "${input_format}" == "nifti" ]]; then
@@ -324,6 +325,7 @@ for fmri_file_path in "${fmri_files[@]}"; do
         fi
 
     fi
+
 
     # --------------------------------------------------------
     # OUTPUT PATHS
@@ -344,18 +346,15 @@ for fmri_file_path in "${fmri_files[@]}"; do
     echo "Parallel jobs : ${max_parallel_jobs}"
     echo "------------------------------------------------------------"
 
+
     # --------------------------------------------------------
-    # SKIP COMPLETED
+    # SKIP COMPLETED / LOCKED
     # --------------------------------------------------------
 
     if [[ -f "${kmap_file}" ]]; then
         echo "Skipping: k-hubness output already exists."
         continue
     fi
-
-    # --------------------------------------------------------
-    # SKIP LOCKED
-    # --------------------------------------------------------
 
     if [[ -f "${lock_file}" ]]; then
         echo "Skipping: lock file exists."
@@ -364,6 +363,7 @@ for fmri_file_path in "${fmri_files[@]}"; do
 
     mkdir -p "${subject_outdir}"
     touch "${lock_file}"
+
 
     # --------------------------------------------------------
     # RUN SPARK
@@ -401,28 +401,30 @@ for fmri_file_path in "${fmri_files[@]}"; do
             --min_voxels           "${min_voxels}" \
             --steps                all \
             --step2_extra          --coding omp --c_bits 8 --rowmean
+
     fi
 
     exit_code=$?
 
-    # --------------------------------------------------------
-    # REMOVE LOCK
-    # --------------------------------------------------------
-
     rm -f "${lock_file}"
 
+
     # --------------------------------------------------------
-    # CHECK RESULT
+    # RESULT
     # --------------------------------------------------------
 
     if [[ ${exit_code} -eq 0 ]]; then
 
         if [[ -f "${kmap_file}" ]]; then
+
             echo "Completed: ${subject_label}"
+
         else
+
             echo "WARNING: Pipeline completed successfully,"
             echo "but expected k-hubness output was not found:"
             echo "  ${kmap_file}"
+
         fi
 
     else
@@ -432,6 +434,7 @@ for fmri_file_path in "${fmri_files[@]}"; do
     fi
 
 done
+
 
 deactivate
 
