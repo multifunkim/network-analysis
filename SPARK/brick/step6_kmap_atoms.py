@@ -2,17 +2,19 @@
 # -*- coding: utf-8 -*-
 
 """
-Step 6 — Final SPARK atoms + k-hubness
+Step 6 — Final SPARK atoms + k-hubness + atom QC workbook
 
 Supported outputs
 -----------------
 NIfTI input:
     atom_XX_<SUBJECT>.nii.gz
     k_hubness_<SUBJECT>.nii.gz
+    atom_qc_<SUBJECT>.xlsx
 
 GIFTI input:
     atom_XX_<SUBJECT>.func.gii
     k_hubness_<SUBJECT>.func.gii
+    atom_qc_<SUBJECT>.xlsx
 
 The original input format is recovered from tseries.mat,
 which is produced by Step 1.
@@ -30,6 +32,19 @@ For NIfTI:
 
 For GIFTI:
     V = retained surface vertices
+
+QC workbook
+-----------
+The workbook lists only atoms that survive Step-6 thresholding and the
+minimum spatial-element criterion. The user may optionally assign a network
+name and should label every reviewed atom as either:
+
+    clean
+    noisy
+
+Blank labels mean that QC has not yet been completed. The workbook is
+consumed later by step7_atom_qc.py. Creating the workbook does not alter
+the original atoms or the original k-hubness map.
 """
 
 import os
@@ -41,6 +56,10 @@ import nibabel as nib
 
 from scipy.io import loadmat
 from scipy.stats import norm
+
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from spatial_io import save_gifti_map
 
@@ -232,6 +251,214 @@ def pin_header_scaling(
     hdr["scl_inter"] = 0.0
 
     return img
+
+
+# ============================================================
+# QC WORKBOOK
+# ============================================================
+
+def create_atom_qc_workbook(
+    outdir,
+    subject_label,
+    kept,
+    counts,
+    input_format
+):
+    """
+    Create a human-editable QC workbook for the atoms saved by Step 6.
+
+    Columns
+    -------
+    atom_id
+        Original centroid/atom index.
+
+    atom_file
+        Exact atom filename written by Step 6.
+
+    network
+        Optional human-entered network name.
+
+    label
+        Human QC decision. Allowed values: clean, noisy.
+        Blank means not reviewed.
+
+    notes
+        Optional free-text notes.
+
+    n_spatial_elements
+        Number of suprathreshold voxels/vertices in the atom.
+
+    Notes
+    -----
+    Only atoms in `kept` are included, so the workbook exactly matches
+    the set of atom files that Step 6 writes to disk.
+    """
+
+    workbook_path = os.path.join(
+        outdir,
+        f"atom_qc_{subject_label}.xlsx"
+    )
+
+    if input_format == "nifti":
+        extension = "nii.gz"
+    elif input_format == "gifti":
+        extension = "func.gii"
+    else:
+        raise ValueError(
+            f"Unsupported input format for QC workbook: {input_format}"
+        )
+
+    wb = Workbook()
+
+    # --------------------------------------------------------
+    # Atom review sheet
+    # --------------------------------------------------------
+
+    ws = wb.active
+    ws.title = "Atoms"
+
+    headers = [
+        "atom_id",
+        "atom_file",
+        "network",
+        "label",
+        "notes",
+        "n_spatial_elements"
+    ]
+
+    ws.append(headers)
+
+    header_fill = PatternFill(
+        fill_type="solid",
+        fgColor="D9EAF7"
+    )
+
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+        cell.alignment = Alignment(
+            horizontal="center"
+        )
+
+    for k in kept:
+
+        atom_filename = (
+            f"atom_{int(k):02d}_{subject_label}.{extension}"
+        )
+
+        ws.append([
+            int(k),
+            atom_filename,
+            "",
+            "",
+            "",
+            int(counts[k])
+        ])
+
+    # --------------------------------------------------------
+    # Controlled QC labels
+    # --------------------------------------------------------
+
+    validation = DataValidation(
+        type="list",
+        formula1='"clean,noisy"',
+        allow_blank=True
+    )
+
+    validation.error = (
+        "Please select either 'clean' or 'noisy'."
+    )
+
+    validation.errorTitle = "Invalid QC label"
+
+    validation.prompt = (
+        "Select clean or noisy. "
+        "Leave blank if this atom has not been reviewed."
+    )
+
+    validation.promptTitle = "Atom QC"
+
+    ws.add_data_validation(
+        validation
+    )
+
+    if ws.max_row >= 2:
+        validation.add(
+            f"D2:D{ws.max_row}"
+        )
+
+    # --------------------------------------------------------
+    # Workbook usability
+    # --------------------------------------------------------
+
+    widths = {
+        "A": 12,
+        "B": 60,
+        "C": 25,
+        "D": 15,
+        "E": 40,
+        "F": 20
+    }
+
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    # --------------------------------------------------------
+    # Information / provenance sheet
+    # --------------------------------------------------------
+
+    info = wb.create_sheet(
+        "Info"
+    )
+
+    info.append([
+        "field",
+        "value"
+    ])
+
+    info["A1"].font = Font(bold=True)
+    info["B1"].font = Font(bold=True)
+
+    info.append([
+        "subject",
+        subject_label
+    ])
+
+    info.append([
+        "input_format",
+        input_format
+    ])
+
+    info.append([
+        "total_saved_atoms",
+        int(len(kept))
+    ])
+
+    info.append([
+        "instructions",
+        (
+            "In the Atoms sheet, optionally fill the network column and "
+            "label every reviewed atom as 'clean' or 'noisy'. "
+            "Leave label blank only if the atom has not been reviewed."
+        )
+    ])
+
+    info.column_dimensions["A"].width = 25
+    info.column_dimensions["B"].width = 100
+
+    wb.save(
+        workbook_path
+    )
+
+    logging.info(
+        "Saved atom QC workbook → %s",
+        workbook_path
+    )
+
+    return workbook_path
 
 
 # ============================================================
@@ -695,8 +922,8 @@ def main():
 
     ap = argparse.ArgumentParser(
         description=(
-            "Step 6 – Compute SPARK atoms and k-hubness "
-            "for NIfTI or GIFTI data"
+            "Step 6 – Compute SPARK atoms, k-hubness, "
+            "and atom QC workbook for NIfTI or GIFTI data"
         )
     )
 
@@ -864,6 +1091,18 @@ def main():
         raise ValueError(
             f"Unsupported format: {input_format}"
         )
+
+    # ========================================================
+    # QC WORKBOOK
+    # ========================================================
+
+    create_atom_qc_workbook(
+        outdir=args.outdir,
+        subject_label=args.subject_label,
+        kept=kept,
+        counts=counts,
+        input_format=input_format
+    )
 
     logging.info(
         "✅ Step 6 completed successfully"
