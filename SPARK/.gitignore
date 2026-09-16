@@ -9,6 +9,7 @@ __pycache__/
 # --------------------------------------------------
 run_spark_slurm_local.sh
 run_spark_local.sh
+run_atom_qc_slurm_local.sh
 
 # --------------------------------------------------
 # SLURM logs
