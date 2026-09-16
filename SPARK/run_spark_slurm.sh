@@ -21,9 +21,9 @@ UPDATE_BRANCH="main"
 # Can be either:
 #   1. A single .nii / .nii.gz / .func.gii file
 #   2. A directory containing supported input files
-input_path="/path/to/input"
+input_path="/path/to/inputs"
 mask_path="/path/to/mask.nii.gz"   # NIfTI only
-output_base="/path/to/output"
+output_base="/path/to/outputs"
 
 suffix="_processed"
 

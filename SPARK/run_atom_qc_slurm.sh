@@ -23,11 +23,11 @@ set -uo pipefail
 #
 # In root-directory mode all atom_qc_*.xlsx files are found
 # recursively.
-qc_path="/path/to/SPARK/results"
+qc_path="/path/to/SPARK/outputs"
 
 # false = keep existing clean k-hubness outputs
 # true  = replace them
-overwrite=false
+overwrite=true
 
 # Alliance module configuration
 python_module="python/3.10.13"
