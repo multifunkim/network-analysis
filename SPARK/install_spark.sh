@@ -12,30 +12,33 @@ elif [[ $# -gt 0 ]]; then
     exit 1
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "ERROR: python3 was not found."
-    echo "Load or install Python 3.10 or newer, then rerun."
+PYTHON_BIN="${PYTHON_BIN:-python3.11}"
+
+if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+    echo "ERROR: Python 3.11 was not found."
+    echo "Load or install Python 3.11, then rerun."
     exit 1
 fi
 
-python3 - <<'PY'
+"${PYTHON_BIN}" - <<'PY'
 import sys
 
-if sys.version_info < (3, 10):
+if sys.version_info < (3, 11):
     raise SystemExit(
-        f"ERROR: Python 3.10 or newer is required; found {sys.version.split()[0]}"
+        f"ERROR: Python 3.11 or newer is required; "
+        f"found {sys.version.split()[0]}"
     )
 PY
 
-echo "SPARK directory : ${SPARK_DIR}"
-echo "Environment     : ${VENV_DIR}"
+echo "SPARK directory  : ${SPARK_DIR}"
+echo "Environment      : ${VENV_DIR}"
 echo "Installation mode: ${MODE}"
 
 if [[ -d "${VENV_DIR}" ]]; then
     echo "Existing virtual environment found."
 else
     echo "Creating virtual environment..."
-    python3.11 -m venv "${VENV_DIR}"
+    "${PYTHON_BIN}" -m venv "${VENV_DIR}"
 fi
 
 source "${VENV_DIR}/bin/activate"
@@ -61,6 +64,7 @@ import nibabel
 import numpy
 import scipy
 import sklearn
+import openpyxl
 
 print("")
 print("Dependency verification passed.")
@@ -69,6 +73,7 @@ print("SciPy        :", scipy.__version__)
 print("scikit-learn :", sklearn.__version__)
 print("NiBabel      :", nibabel.__version__)
 print("Joblib       :", joblib.__version__)
+print("openpyxl     :", openpyxl.__version__)
 PY
 
 echo ""
