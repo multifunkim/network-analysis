@@ -20,12 +20,9 @@ slurm-*.out
 # Local test outputs
 # --------------------------------------------------
 tmp/
-test_output/# Local launcher scripts
-run_spark_slurm_local.sh
-run_spark_local.sh
-
+test_output/
 
 # --------------------------------------------------
-# SLURM output logs
+# Experimental SPARK Viewer prototype
 # --------------------------------------------------
-slurm-*.out
+viewer/

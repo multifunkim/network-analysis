@@ -35,7 +35,7 @@ n_iter=30
 pvalue=0.05
 min_voxels=30
 
-python_module="python/3.10.13"
+python_module="python/3.11"
 
 
 # ============================================================

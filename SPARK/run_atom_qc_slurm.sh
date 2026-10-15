@@ -30,7 +30,7 @@ qc_path="/path/to/SPARK/outputs"
 overwrite=true
 
 # Alliance module configuration
-python_module="python/3.10.13"
+python_module="python/3.11"
 
 # ============================================================
 # AUTOMATIC PATHS
