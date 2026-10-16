@@ -53,7 +53,16 @@ def run_ksvd(mat_path, K, L, n_iter, outdir, init_dir=None):
                 u,s,vt = randomized_svd(R, 1, random_state=0)
             D[:,k]   = u[:,0] / np.linalg.norm(u[:,0])
             A[k,vox] = s[0] * vt[0]
-        D = norm_sign(D)
+        # Normalize D while preserving the paired factorization D @ A.
+        norms = np.maximum(np.linalg.norm(D, axis=0), 1e-12)
+        D = D / norms[None, :]
+        A = A * norms[:, None]
+
+        # Apply identical sign changes to D columns and A rows.
+        signs = np.where(D[0, :] < 0, -1.0, 1.0)
+        D = D * signs[None, :]
+        A = A * signs[:, None]
+
         logging.info(f"{name}: iter {it+1}/{n_iter}")
     savemat(os.path.join(outdir,f"{name}_dict.mat"),
             {"D":D.astype(np.float32),"A":A.astype(np.float32)})
