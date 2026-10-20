@@ -365,6 +365,26 @@ def main():
         )
 
     # ============================================================
+    # CIFTI-SPECIFIC METADATA
+    # ============================================================
+
+    elif input_format == "cifti":
+
+        output["grayordinate_indices"] = spatial_index.astype(
+            np.int64
+        )
+        output["cifti_template"] = np.array(
+            [loaded["cifti_template"]], dtype=object
+        )
+        output["cifti_tr"] = np.array(
+            [[loaded["cifti_tr"]]], dtype=np.float64
+        )
+
+        logging.info(
+            "Stored CIFTI grayordinate indices and template path"
+        )
+
+    # ============================================================
     # SAVE
     # ============================================================
 

@@ -174,7 +174,8 @@ def get_input_format(tseries_mat):
 
     if fmt not in (
         "nifti",
-        "gifti"
+        "gifti",
+        "cifti"
     ):
 
         raise ValueError(
@@ -303,6 +304,8 @@ def create_atom_qc_workbook(
         extension = "nii.gz"
     elif input_format == "gifti":
         extension = "func.gii"
+    elif input_format == "cifti":
+        extension = "dscalar.nii"
     else:
         raise ValueError(
             f"Unsupported input format for QC workbook: {input_format}"
@@ -914,6 +917,173 @@ def save_gifti_outputs(
     )
 
 
+
+# ============================================================
+# CIFTI OUTPUT
+# ============================================================
+
+def save_cifti_outputs(
+    C, Z, SEL, kept, tseries_mat, outdir, subject_label
+):
+    """
+    Reconstruct atoms and k-hubness in the original CIFTI
+    grayordinate space, preserving its BrainModelAxis.
+    """
+    from nibabel.cifti2.cifti2_axes import (
+        BrainModelAxis,
+        ScalarAxis,
+    )
+
+    if "grayordinate_indices" not in tseries_mat:
+        raise KeyError(
+            "Missing grayordinate_indices in tseries.mat."
+        )
+
+    if "n_spatial_original" not in tseries_mat:
+        raise KeyError(
+            "Missing n_spatial_original in tseries.mat."
+        )
+
+    indices = np.asarray(
+        tseries_mat["grayordinate_indices"],
+        dtype=np.int64
+    ).ravel()
+
+    n_original = int(
+        np.asarray(
+            tseries_mat["n_spatial_original"]
+        ).squeeze()
+    )
+
+    K, V = C.shape
+
+    if indices.size != V:
+        raise ValueError(
+            f"CIFTI spatial mismatch: centroids have {V} "
+            f"columns but indices contain {indices.size} entries."
+        )
+
+    if (
+        np.any(indices < 0)
+        or np.any(indices >= n_original)
+        or np.unique(indices).size != indices.size
+    ):
+        raise ValueError("Invalid CIFTI grayordinate indices.")
+
+    template_path = None
+
+    for key in ("cifti_template", "source_file"):
+        if key in tseries_mat:
+            candidate = matlab_string(
+                tseries_mat[key]
+            ).strip()
+
+            if candidate and os.path.isfile(candidate):
+                template_path = candidate
+                break
+
+    if template_path is None:
+        raise FileNotFoundError(
+            "Original CIFTI template is required for "
+            "BrainModelAxis reconstruction."
+        )
+
+    template = nib.load(template_path)
+
+    if not isinstance(template, nib.cifti2.Cifti2Image):
+        raise TypeError("CIFTI template is not a Cifti2Image.")
+
+    brain_axis = template.header.get_axis(1)
+
+    if not isinstance(brain_axis, BrainModelAxis):
+        raise ValueError(
+            "Template axis 1 must be a BrainModelAxis."
+        )
+
+    if len(brain_axis) != n_original:
+        raise ValueError(
+            "Template grayordinate count does not match "
+            "Step 1 metadata."
+        )
+
+    def save_map(values, path, map_name):
+        values = np.asarray(
+            values, dtype=np.float32
+        ).ravel()
+
+        if values.size != n_original:
+            raise ValueError(
+                "CIFTI output length does not match template."
+            )
+
+        header = nib.cifti2.Cifti2Header.from_axes(
+            (
+                ScalarAxis([map_name]),
+                brain_axis
+            )
+        )
+
+        image = nib.cifti2.Cifti2Image(
+            dataobj=values[np.newaxis, :],
+            header=header
+        )
+
+        nib.save(image, path)
+
+    # Individual thresholded atoms
+    for k in kept:
+        full_map = np.zeros(
+            n_original, dtype=np.float32
+        )
+
+        selected = SEL[k]
+        full_map[indices[selected]] = Z[k, selected]
+
+        atom_path = os.path.join(
+            outdir,
+            f"atom_{k:02d}_{subject_label}.dscalar.nii"
+        )
+
+        save_map(
+            full_map,
+            atom_path,
+            f"atom_{k:02d}"
+        )
+
+        logging.info("Saved CIFTI atom: %s", atom_path)
+
+    # k-hubness: number of retained atoms at each grayordinate
+    if kept.size:
+        hub_counts = SEL[kept].sum(
+            axis=0
+        ).astype(np.float32)
+    else:
+        hub_counts = np.zeros(
+            V, dtype=np.float32
+        )
+
+    full_hub = np.zeros(
+        n_original, dtype=np.float32
+    )
+
+    full_hub[indices] = hub_counts
+
+    kmap_path = os.path.join(
+        outdir,
+        f"k_hubness_{subject_label}.dscalar.nii"
+    )
+
+    save_map(
+        full_hub,
+        kmap_path,
+        "k_hubness"
+    )
+
+    logging.info(
+        "Saved CIFTI k-hubness: %s", kmap_path
+    )
+
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -1077,6 +1247,18 @@ def main():
     elif input_format == "gifti":
 
         save_gifti_outputs(
+            C=C,
+            Z=Z,
+            SEL=SEL,
+            kept=kept,
+            tseries_mat=tseries_mat,
+            outdir=args.outdir,
+            subject_label=args.subject_label
+        )
+
+    elif input_format == "cifti":
+
+        save_cifti_outputs(
             C=C,
             Z=Z,
             SEL=SEL,
