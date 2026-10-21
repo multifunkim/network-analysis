@@ -59,6 +59,9 @@ def detect_format(path):
 
     path_lower = str(path).lower()
 
+    if path_lower.endswith(".dtseries.nii"):
+        return "cifti"
+
     if path_lower.endswith(".nii") or path_lower.endswith(".nii.gz"):
         return "nifti"
 
@@ -301,6 +304,63 @@ def load_gifti_timeseries(gifti_path):
     }
 
 
+
+# ============================================================
+# CIFTI DENSE TIMESERIES LOADER
+# ============================================================
+
+def load_cifti_timeseries(cifti_path):
+    """
+    Load a CIFTI-2 dense timeseries into SPARK's T x V format.
+
+    Spatial indices refer to the original CIFTI grayordinate
+    positions. The source file is retained as the spatial
+    template for subsequent dense-scalar reconstruction.
+    """
+    img = nib.load(cifti_path)
+
+    if not isinstance(img, nib.cifti2.Cifti2Image):
+        raise TypeError(
+            f"Expected CIFTI-2 image, got {type(img).__name__}"
+        )
+
+    from nibabel.cifti2.cifti2_axes import (
+        SeriesAxis,
+        BrainModelAxis,
+    )
+
+    time_axis = img.header.get_axis(0)
+    brain_axis = img.header.get_axis(1)
+
+    if not isinstance(time_axis, SeriesAxis):
+        raise ValueError(
+            "CIFTI input must have a SeriesAxis on axis 0."
+        )
+
+    if not isinstance(brain_axis, BrainModelAxis):
+        raise ValueError(
+            "CIFTI input must have a BrainModelAxis on axis 1."
+        )
+
+    data = np.asarray(img.dataobj, dtype=np.float64)
+
+    if data.ndim != 2 or data.shape[1] != len(brain_axis):
+        raise ValueError(
+            f"Unexpected CIFTI dimensions: {data.shape}"
+        )
+
+    return {
+        "tseries": data,
+        "spatial_index": np.arange(
+            data.shape[1], dtype=np.int64
+        ),
+        "n_spatial_original": int(data.shape[1]),
+        "format": "cifti",
+        "cifti_template": os.path.abspath(cifti_path),
+        "cifti_tr": float(time_axis.step),
+    }
+
+
 # ============================================================
 # GENERIC LOADER
 # ============================================================
@@ -321,6 +381,15 @@ def load_timeseries(input_path, mask_path=None):
             input_path,
             mask_path
         )
+
+    elif input_format == "cifti":
+
+        if mask_path is not None:
+            raise ValueError(
+                "CIFTI input does not accept a NIfTI mask."
+            )
+
+        result = load_cifti_timeseries(input_path)
 
     elif input_format == "gifti":
 

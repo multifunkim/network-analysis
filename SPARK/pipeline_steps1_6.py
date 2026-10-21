@@ -300,7 +300,7 @@ def main():
             args.mask_path
         )
 
-    elif input_format == "gifti":
+    elif input_format in ("gifti", "cifti"):
 
         if args.mask_path is not None:
 
@@ -606,6 +606,13 @@ def main():
         kmap_path = os.path.join(
             kmap_dir,
             f"k_hubness_{subj}.func.gii"
+        )
+
+    elif input_format == "cifti":
+
+        kmap_path = os.path.join(
+            kmap_dir,
+            f"k_hubness_{subj}.dscalar.nii"
         )
 
 
