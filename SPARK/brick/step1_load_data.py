@@ -35,6 +35,7 @@ import numpy as np
 from scipy.io import savemat
 
 from spatial_io import load_timeseries, detect_format
+from utils import get_cifti_region_indices
 
 
 def setup_logger(out_mat):
@@ -387,6 +388,120 @@ def main():
     # ============================================================
     # SAVE
     # ============================================================
+
+
+    # ============================================================
+    # REGION-ADAPTIVE STEP 1 — CIFTI ONLY
+    # ============================================================
+
+    if input_format == "cifti":
+
+        regions, structures = get_cifti_region_indices(args.fmri)
+
+        for structure, region, count in structures:
+            logging.info(
+                "CIFTI structure: %s | region=%s | count=%d",
+                structure, region, count
+            )
+
+        logging.info(
+            "CIFTI original partition: cortex=%d noncortex=%d total=%d",
+            len(regions["cortex"]),
+            len(regions["noncortex"]),
+            n_spatial_original
+        )
+
+        positions = {}
+
+        for region, original_indices in regions.items():
+
+            # spatial_index contains ORIGINAL grayordinate indices
+            # after invalid/zero-variance filtering.
+            positions[region] = np.flatnonzero(
+                np.isin(spatial_index, original_indices)
+            )
+
+        combined = np.concatenate([
+            positions["cortex"],
+            positions["noncortex"]
+        ])
+
+        if (
+            len(combined) != len(spatial_index)
+            or not np.array_equal(
+                np.sort(combined),
+                np.arange(len(spatial_index))
+            )
+        ):
+            raise ValueError(
+                "CIFTI regional partition failed after filtering."
+            )
+
+        logging.info(
+            "CIFTI PARTITION VERIFIED: cortex=%d + noncortex=%d = %d",
+            len(positions["cortex"]),
+            len(positions["noncortex"]),
+            len(spatial_index)
+        )
+
+        if all(len(pos) > 0 for pos in positions.values()):
+
+            for region, pos in positions.items():
+
+                regional_ts = ts_full[:, pos]
+
+                regional_idx_sub = np.arange(
+                    0, len(pos), args.subsample, dtype=np.int64
+                )
+
+                regional_spatial_index = spatial_index[pos]
+
+                regional_output = dict(output)
+
+                regional_output.update({
+                    "tseries_full": regional_ts,
+                    "tseries_sub": regional_ts[:, regional_idx_sub],
+                    "spatial_index": regional_spatial_index,
+                    "grayordinate_indices": regional_spatial_index,
+                    "idx_sub": regional_idx_sub,
+                    "n_spatial_original": np.array(
+                        [[len(regions[region])]], dtype=np.int64
+                    ),
+                    "n_spatial_retained": np.array(
+                        [[len(pos)]], dtype=np.int64
+                    ),
+                    "region_name": np.array(
+                        [region], dtype=object
+                    ),
+                })
+
+                region_dir = os.path.join(
+                    os.path.dirname(args.out) or ".", region
+                )
+                os.makedirs(region_dir, exist_ok=True)
+
+                regional_path = os.path.join(
+                    region_dir, "tseries.mat"
+                )
+
+                savemat(regional_path, regional_output)
+
+                logging.info(
+                    "CIFTI %s: original=%d retained=%d removed=%d "
+                    "subsampled=%d shape=%s saved=%s",
+                    region,
+                    len(regions[region]),
+                    len(pos),
+                    len(regions[region]) - len(pos),
+                    len(regional_idx_sub),
+                    regional_ts.shape,
+                    regional_path
+                )
+
+        else:
+            logging.info(
+                "Single-compartment CIFTI: using standard SPARK."
+            )
 
     savemat(
         args.out,
