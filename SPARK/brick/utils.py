@@ -26,55 +26,49 @@ def description_length(x, D, a):
 
 
 def get_cifti_region_indices(cifti_path):
-    """Identify cortical and noncortical columns from CIFTI metadata.
-
-    Returns original grayordinate indices and structure counts.
-    """
+    """Partition original CIFTI grayordinates into cortex and noncortex."""
     import nibabel as nib
+    from nibabel.cifti2.cifti2_axes import BrainModelAxis
 
     img = nib.load(str(cifti_path))
     brain_axis = img.header.get_axis(1)
 
-    cortex = []
-    noncortex = []
-    structures = []
+    if not isinstance(brain_axis, BrainModelAxis):
+        raise ValueError("Expected BrainModelAxis on CIFTI axis 1.")
 
-    for name, slc, _ in brain_axis.iter_structures():
-        indices = np.arange(slc.start, slc.stop, dtype=np.int64)
+    # Each grayordinate has its own anatomical structure name.
+    names = np.asarray(brain_axis.name).astype(str)
 
-        region = (
-            "cortex"
-            if name in (
-                "CIFTI_STRUCTURE_CORTEX_LEFT",
-                "CIFTI_STRUCTURE_CORTEX_RIGHT",
-            )
-            else "noncortex"
-        )
+    cortical_names = [
+        "CIFTI_STRUCTURE_CORTEX_LEFT",
+        "CIFTI_STRUCTURE_CORTEX_RIGHT",
+    ]
 
-        if region == "cortex":
-            cortex.append(indices)
-        else:
-            noncortex.append(indices)
+    cortex_mask = np.isin(names, cortical_names)
 
-        structures.append((name, region, len(indices)))
-
-    result = {
-        "cortex": (
-            np.concatenate(cortex)
-            if cortex else np.array([], dtype=np.int64)
-        ),
-        "noncortex": (
-            np.concatenate(noncortex)
-            if noncortex else np.array([], dtype=np.int64)
-        ),
+    regions = {
+        "cortex": np.flatnonzero(cortex_mask).astype(np.int64),
+        "noncortex": np.flatnonzero(~cortex_mask).astype(np.int64),
     }
 
-    combined = np.concatenate(list(result.values()))
+    structures = []
+    for name, count in zip(*np.unique(names, return_counts=True)):
+        region = "cortex" if name in cortical_names else "noncortex"
+        structures.append((name, region, int(count)))
+
+    # Verify that all grayordinates are assigned exactly once.
+    combined = np.concatenate([
+        regions["cortex"],
+        regions["noncortex"],
+    ])
 
     if (
         combined.size != len(brain_axis)
-        or np.unique(combined).size != len(brain_axis)
+        or not np.array_equal(
+            np.sort(combined),
+            np.arange(len(brain_axis))
+        )
     ):
         raise ValueError("Invalid CIFTI regional partition.")
 
-    return result, structures
+    return regions, structures
