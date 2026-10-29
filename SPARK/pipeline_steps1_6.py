@@ -242,6 +242,13 @@ def main():
     )
 
     p.add_argument(
+        "--bootstrap_seed",
+        type=int,
+        default=0,
+        help="Shared random seed for regional bootstrapping"
+    )
+
+    p.add_argument(
         "--max_parallel_jobs",
         type=int,
         default=8
@@ -460,7 +467,7 @@ def main():
         # Steps 3–6 will be upgraded subsequently.
         # Never run the legacy whole-brain downstream stages
         # accidentally with regional model-selection outputs.
-        if any(step in to_run for step in (3, 4, 5, 6)):
+        if any(step in to_run for step in (4, 5, 6)):
             raise NotImplementedError(
                 "Regional CIFTI Steps 3–6 are not implemented yet. "
                 "Use --steps 1 or --steps 2."
@@ -561,39 +568,96 @@ def main():
     # ========================================================
     # ========================================================
     # STEP 3
-    # Bootstrap
+    # Matched circular block bootstrap for regional CIFTI
     # ========================================================
 
-    last_boot = os.path.join(
-        boot_dir,
-        f"boot_{args.nb_samps - 1:03d}.mat"
-    )
+    if 3 in to_run:
 
-    cmd3 = [
-        sys.executable,
-        os.path.join(BRICK_DIR, "step3_bootstrap.py"),
+        if input_format == "cifti":
 
-        "--tseries",
-        mat1,
+            from brick.utils import get_cifti_region_indices
 
-        "--block-len",
-        str(
-            args.block_window_length[0]
-        ),
+            regions, _ = get_cifti_region_indices(args.fmri_path)
 
-        "--n-boot",
-        str(args.nb_samps),
+            selected = {
+                "whole": ("cortex", "noncortex"),
+                "cortex": ("cortex",),
+                "subcortex": ("noncortex",),
+            }[args.cifti_region]
 
-        "--outdir",
-        boot_dir
-    ]
+            for region in selected:
 
-    run_step(
-        cmd3,
-        last_boot,
-        3 in to_run,
-        3
-    )
+                if len(regions[region]) == 0:
+                    raise ValueError(
+                        f"CIFTI contains no {region} grayordinates."
+                    )
+
+                other = (
+                    "noncortex" if region == "cortex"
+                    else "cortex"
+                )
+
+                region_dir = os.path.join(wd, region)
+                region_mat = os.path.join(
+                    region_dir, "tseries.mat"
+                )
+
+                # For a single-compartment CIFTI,
+                # Step 1 may produce only the full matrix.
+                if not os.path.isfile(region_mat):
+                    if len(regions[other]) == 0:
+                        region_mat = mat1
+                    else:
+                        raise FileNotFoundError(
+                            f"Missing {region_mat}. Run Step 1."
+                        )
+
+                region_boot = os.path.join(region_dir, "boot")
+                marker = os.path.join(
+                    region_boot,
+                    f"boot_{args.nb_samps - 1:03d}.mat"
+                )
+
+                cmd = [
+                    sys.executable,
+                    os.path.join(
+                        BRICK_DIR, "step3_bootstrap.py"
+                    ),
+                    "--tseries", region_mat,
+                    "--block-len",
+                    str(args.block_window_length[0]),
+                    "--n-boot", str(args.nb_samps),
+                    "--seed", str(args.bootstrap_seed),
+                    "--outdir", region_boot,
+                ]
+
+                logging.info(
+                    "Regional Step 3: %s | seed=%d",
+                    region, args.bootstrap_seed
+                )
+
+                run_step(cmd, marker, True, 3)
+
+        else:
+
+            last_boot = os.path.join(
+                boot_dir,
+                f"boot_{args.nb_samps - 1:03d}.mat"
+            )
+
+            cmd3 = [
+                sys.executable,
+                os.path.join(
+                    BRICK_DIR, "step3_bootstrap.py"
+                ),
+                "--tseries", mat1,
+                "--block-len",
+                str(args.block_window_length[0]),
+                "--n-boot", str(args.nb_samps),
+                "--outdir", boot_dir,
+            ]
+
+            run_step(cmd3, last_boot, True, 3)
 
 
     # ========================================================
