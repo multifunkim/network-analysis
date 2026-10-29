@@ -188,6 +188,31 @@ def main():
     )
 
     p.add_argument(
+        "--cortex_scales",
+        nargs=3,
+        type=int,
+        default=[10, 2, 20],
+        metavar=("KMIN", "KSTEP", "KMAX"),
+        help="Cortical K grid for full-brain CIFTI"
+    )
+
+    p.add_argument(
+        "--noncortex_scales",
+        nargs=3,
+        type=int,
+        default=[2, 2, 10],
+        metavar=("KMIN", "KSTEP", "KMAX"),
+        help="Noncortical K grid for full-brain CIFTI"
+    )
+
+    p.add_argument(
+        "--cifti_region",
+        choices=["whole", "cortex", "subcortex"],
+        default="whole",
+        help="CIFTI analysis region"
+    )
+
+    p.add_argument(
         "--l-max",
         type=int,
         default=None,
@@ -402,55 +427,138 @@ def main():
 
     # ========================================================
     # STEP 2
-    # MDL scale estimation
+    # MDL scale estimation (regional for full-brain CIFTI)
     # ========================================================
 
-    Kmin, Kstep, Kmax = (
-        args.network_scales
-    )
+    regional_cifti = False
 
-    cmd2 = [
-        sys.executable,
-        os.path.join(BRICK_DIR, "step2_estimate_scale.py"),
-
-        "--tseries",
-        mat1,
-
-        "--k-min",
-        str(Kmin),
-
-        "--k-step",
-        str(Kstep),
-
-        "--k-max",
-        str(Kmax),
-
-        "--out",
-        mat2
-    ]
-
-    if (
-        args.l_max is not None
-        and args.l_max > 0
+    if input_format == "cifti" and (
+        2 in to_run or any(step in to_run for step in (3, 4, 5, 6))
     ):
+        import nibabel as nib
+        from nibabel.cifti2.cifti2_axes import BrainModelAxis
 
-        cmd2 += [
-            "--l-max",
-            str(args.l_max)
+        img = nib.load(args.fmri_path)
+        brain_axis = img.header.get_axis(1)
+
+        if not isinstance(brain_axis, BrainModelAxis):
+            raise ValueError("Expected CIFTI BrainModelAxis.")
+
+        names = brain_axis.name
+        cortex_names = {
+            "CIFTI_STRUCTURE_CORTEX_LEFT",
+            "CIFTI_STRUCTURE_CORTEX_RIGHT",
+        }
+
+        has_cortex = any(name in cortex_names for name in names)
+        has_noncortex = any(name not in cortex_names for name in names)
+
+        regional_cifti = has_cortex and has_noncortex
+
+    if regional_cifti:
+
+        # Steps 3–6 will be upgraded subsequently.
+        # Never run the legacy whole-brain downstream stages
+        # accidentally with regional model-selection outputs.
+        if any(step in to_run for step in (3, 4, 5, 6)):
+            raise NotImplementedError(
+                "Regional CIFTI Steps 3–6 are not implemented yet. "
+                "Use --steps 1 or --steps 2."
+            )
+
+        logging.info(
+            "Full-brain CIFTI detected: regional MDL enabled"
+        )
+
+        selected_regions = {
+            "whole": (
+                ("cortex", args.cortex_scales),
+                ("noncortex", args.noncortex_scales),
+            ),
+            "cortex": (
+                ("cortex", args.cortex_scales),
+            ),
+            "subcortex": (
+                ("noncortex", args.noncortex_scales),
+            ),
+        }[args.cifti_region]
+
+        logging.info(
+            "CIFTI analysis mode: %s",
+            args.cifti_region
+        )
+
+        for region, scales in selected_regions:
+
+            kmin, kstep, kmax = scales
+
+            if kmin < 2 or kstep < 1 or kmax < kmin:
+                raise ValueError(
+                    f"Invalid {region} K grid: {scales}"
+                )
+
+            region_dir = os.path.join(wd, region)
+            region_mat = os.path.join(region_dir, "tseries.mat")
+            region_scale = os.path.join(region_dir, "scale.mat")
+
+            if 2 in to_run and not os.path.isfile(region_mat):
+                raise FileNotFoundError(
+                    f"Missing {region_mat}. Run Step 1 first."
+                )
+
+            logging.info(
+                "Regional MDL: %s | K=%d:%d:%d | input=%s",
+                region, kmin, kstep, kmax, region_mat
+            )
+
+            cmd_region = [
+                sys.executable,
+                os.path.join(BRICK_DIR, "step2_estimate_scale.py"),
+                "--tseries", region_mat,
+                "--k-min", str(kmin),
+                "--k-step", str(kstep),
+                "--k-max", str(kmax),
+                "--out", region_scale,
+            ]
+
+            if args.l_max is not None and args.l_max > 0:
+                cmd_region += ["--l-max", str(args.l_max)]
+
+            if args.step2_extra:
+                cmd_region += args.step2_extra
+
+            run_step(
+                cmd_region,
+                region_scale,
+                2 in to_run,
+                2
+            )
+
+    else:
+        # Original SPARK behavior for NIfTI, GIFTI,
+        # and single-compartment CIFTI.
+        Kmin, Kstep, Kmax = args.network_scales
+
+        cmd2 = [
+            sys.executable,
+            os.path.join(BRICK_DIR, "step2_estimate_scale.py"),
+            "--tseries", mat1,
+            "--k-min", str(Kmin),
+            "--k-step", str(Kstep),
+            "--k-max", str(Kmax),
+            "--out", mat2,
         ]
 
-    if args.step2_extra:
+        if args.l_max is not None and args.l_max > 0:
+            cmd2 += ["--l-max", str(args.l_max)]
 
-        cmd2 += args.step2_extra
+        if args.step2_extra:
+            cmd2 += args.step2_extra
 
-    run_step(
-        cmd2,
-        mat2,
-        2 in to_run,
-        2
-    )
+        run_step(cmd2, mat2, 2 in to_run, 2)
 
 
+    # ========================================================
     # ========================================================
     # STEP 3
     # Bootstrap
