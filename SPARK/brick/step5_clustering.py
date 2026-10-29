@@ -18,20 +18,43 @@ def main():
     p = argparse.ArgumentParser(description="Step 5 – Cluster spatial maps across bootstraps")
     p.add_argument('--dicts', nargs='+', required=True,
                    help='list of *_dict.mat files from Step 4')
-    p.add_argument('--scale', required=True, help='scale.mat from Step 2')
+    p.add_argument('--scale', help='scale.mat from Step 2')
+    p.add_argument('--k-from-dict', action='store_true',
+                   help='Derive K from the first joint dictionary')
     p.add_argument('--out',   required=True, help='output clusters.mat')
     args = p.parse_args()
 
     setup_logger(args.out)
-    # load bestK
-    sc = loadmat(args.scale)
-    K  = int(sc['bestK'].squeeze())
+    # Joint CIFTI uses the combined dictionary's atom count.
+    # Legacy SPARK continues to use bestK from scale.mat.
+    if args.k_from_dict:
+        if args.scale:
+            p.error("--k-from-dict cannot be combined with --scale")
+        D0 = loadmat(args.dicts[0], variable_names=['D'])['D']
+        K = int(D0.shape[1])
+    else:
+        if not args.scale:
+            p.error("--scale is required unless --k-from-dict is set")
+        sc = loadmat(args.scale)
+        K = int(sc['bestK'].squeeze())
+
     logging.info(f"Clustering into K={K} spatial networks")
 
     # load & stack |A| from each bootstrap
     maps = []
     for dfile in args.dicts:
-        M = loadmat(dfile)['A']        # (K, V)
+        M = loadmat(dfile, variable_names=['A'])['A']
+        if M.ndim != 2 or M.shape[0] != K:
+            raise ValueError(
+                f"Dictionary coefficient shape inconsistent with K={K}: "
+                f"{dfile}: {M.shape}"
+            )
+        if maps and M.shape[1] != maps[0].shape[1]:
+            raise ValueError(
+                f"Spatial dimension mismatch in {dfile}"
+            )
+        if not np.isfinite(M).all():
+            raise ValueError(f"Nonfinite coefficients in {dfile}")
         maps.append(np.abs(M))         # absolute value
     ConX = np.vstack(maps)            # (B*K, V)
     logging.info(f"Stacked maps array shape: {ConX.shape}")

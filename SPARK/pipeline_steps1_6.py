@@ -474,7 +474,7 @@ def main():
         # Steps 3–6 will be upgraded subsequently.
         # Never run the legacy whole-brain downstream stages
         # accidentally with regional model-selection outputs.
-        if any(step in to_run for step in (5, 6)):
+        if 6 in to_run:
             raise NotImplementedError(
                 "Regional CIFTI Steps 3–6 are not implemented yet. "
                 "Use --steps 1 or --steps 2."
@@ -809,46 +809,97 @@ def main():
 
     # ========================================================
     # STEP 5
-    # Spatial clustering
+    # Spatial clustering across bootstrap dictionaries
     # ========================================================
 
-    dicts = sorted(
-        glob.glob(
-            os.path.join(
-                dict_dir,
-                "*_dict.mat"
+    if 5 in to_run and input_format == "cifti":
+
+        from brick.utils import get_cifti_region_indices
+
+        regions, _ = get_cifti_region_indices(args.fmri_path)
+
+        if args.cifti_region == "whole":
+            if not all(len(regions[r]) for r in ("cortex", "noncortex")):
+                raise ValueError(
+                    "Whole mode requires cortex and noncortex."
+                )
+            target_dir = wd
+            scale_path = None
+
+        else:
+            region = (
+                "cortex" if args.cifti_region == "cortex"
+                else "noncortex"
             )
+            if not len(regions[region]):
+                raise ValueError(
+                    f"CIFTI contains no {region} grayordinates."
+                )
+            target_dir = os.path.join(wd, region)
+            scale_path = os.path.join(target_dir, "scale.mat")
+
+        dictionary_dir = os.path.join(target_dir, "dict")
+        cluster_path = os.path.join(target_dir, "clusters.mat")
+
+        dicts = sorted(glob.glob(
+            os.path.join(dictionary_dir, "boot_*_dict.mat")
+        ))
+
+        expected = [
+            f"boot_{i:03d}_dict.mat"
+            for i in range(args.nb_samps)
+        ]
+
+        if [os.path.basename(d) for d in dicts] != expected:
+            raise ValueError(
+                f"Step 5 requires {args.nb_samps} consecutive "
+                f"dictionary files in {dictionary_dir}"
+            )
+
+        cmd5 = [
+            sys.executable,
+            os.path.join(BRICK_DIR, "step5_clustering.py"),
+            "--dicts",
+            *dicts,
+        ]
+
+        if scale_path is None:
+            cmd5 += ["--k-from-dict"]
+        else:
+            if not os.path.isfile(scale_path):
+                raise FileNotFoundError(scale_path)
+            cmd5 += ["--scale", scale_path]
+
+        cmd5 += ["--out", cluster_path]
+
+        logging.info(
+            "Step 5: CIFTI %s | %d dictionaries | %s",
+            args.cifti_region, len(dicts), cluster_path
         )
-    )
 
-    if (
-        5 in to_run
-        and not dicts
-    ):
+        run_step(cmd5, cluster_path, True, 5)
 
-        raise FileNotFoundError(
-            f"No dictionary files found in {dict_dir}"
-        )
+    else:
+        # Preserve the existing NIfTI/GIFTI pipeline.
+        dicts = sorted(glob.glob(
+            os.path.join(dict_dir, "*_dict.mat")
+        ))
 
-    cmd5 = [
-        sys.executable,
-        os.path.join(BRICK_DIR, "step5_clustering.py"),
-        "--dicts"
-    ] + dicts + [
+        if 5 in to_run and not dicts:
+            raise FileNotFoundError(
+                f"No dictionary files found in {dict_dir}"
+            )
 
-        "--scale",
-        mat2,
+        cmd5 = [
+            sys.executable,
+            os.path.join(BRICK_DIR, "step5_clustering.py"),
+            "--dicts",
+            *dicts,
+            "--scale", mat2,
+            "--out", mat5,
+        ]
 
-        "--out",
-        mat5
-    ]
-
-    run_step(
-        cmd5,
-        mat5,
-        5 in to_run,
-        5
-    )
+        run_step(cmd5, mat5, 5 in to_run, 5)
 
 
     # ========================================================
