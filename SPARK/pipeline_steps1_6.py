@@ -467,7 +467,7 @@ def main():
         # Steps 3–6 will be upgraded subsequently.
         # Never run the legacy whole-brain downstream stages
         # accidentally with regional model-selection outputs.
-        if any(step in to_run for step in (4, 5, 6)):
+        if any(step in to_run for step in (5, 6)):
             raise NotImplementedError(
                 "Regional CIFTI Steps 3–6 are not implemented yet. "
                 "Use --steps 1 or --steps 2."
@@ -662,40 +662,121 @@ def main():
 
     # ========================================================
     # STEP 4
-    # Dictionary learning
+    # K-SVD dictionary learning
     # ========================================================
 
-    sample_dict = os.path.join(
-        dict_dir,
-        "boot_000_dict.mat"
-    )
+    if 4 in to_run and input_format == "cifti":
 
-    cmd4 = [
-        sys.executable,
-        os.path.join(BRICK_DIR, "step4_dictionary.py"),
+        from brick.utils import get_cifti_region_indices
 
-        "--bootstrap_dir",
-        boot_dir,
+        regions, _ = get_cifti_region_indices(args.fmri_path)
 
-        "--scale",
-        mat2,
+        selected = {
+            "whole": ("cortex", "noncortex"),
+            "cortex": ("cortex",),
+            "subcortex": ("noncortex",),
+        }[args.cifti_region]
 
-        "--outdir",
-        dict_dir,
+        for region in selected:
 
-        "--n-iter",
-        str(args.n_iter),
+            if len(regions[region]) == 0:
+                raise ValueError(
+                    f"CIFTI contains no {region} grayordinates."
+                )
 
-        "--n-jobs",
-        str(args.max_parallel_jobs)
-    ]
+            region_dir = os.path.join(wd, region)
+            region_boot = os.path.join(region_dir, "boot")
+            region_scale = os.path.join(region_dir, "scale.mat")
+            region_dict = os.path.join(region_dir, "dict")
 
-    run_step(
-        cmd4,
-        sample_dict,
-        4 in to_run,
-        4
-    )
+            if not os.path.isdir(region_boot):
+                raise FileNotFoundError(
+                    f"Missing bootstrap directory: {region_boot}"
+                )
+
+            if not os.path.isfile(region_scale):
+                raise FileNotFoundError(
+                    f"Missing regional scale: {region_scale}"
+                )
+
+            boots = sorted(glob.glob(
+                os.path.join(region_boot, "boot_*.mat")
+            ))
+
+            if len(boots) != args.nb_samps:
+                raise ValueError(
+                    f"{region}: found {len(boots)} bootstrap "
+                    f"files, expected {args.nb_samps}"
+                )
+
+            expected = [
+                f"boot_{i:03d}.mat"
+                for i in range(args.nb_samps)
+            ]
+
+            if [os.path.basename(x) for x in boots] != expected:
+                raise ValueError(
+                    f"{region}: bootstrap filenames are incomplete"
+                )
+
+            cmd = [
+                sys.executable,
+                os.path.join(
+                    BRICK_DIR, "step4_dictionary.py"
+                ),
+                "--bootstrap_dir", region_boot,
+                "--scale", region_scale,
+                "--outdir", region_dict,
+                "--n-iter", str(args.n_iter),
+                "--n-jobs", str(args.max_parallel_jobs),
+            ]
+
+            logging.info(
+                "Regional Step 4: %s | %d bootstraps",
+                region, len(boots)
+            )
+
+            # Step 4 already skips completed dictionaries
+            # internally. Always invoke it to resume partial runs.
+            subprocess.check_call(cmd)
+
+            missing = [
+                f"boot_{i:03d}_dict.mat"
+                for i in range(args.nb_samps)
+                if not os.path.isfile(os.path.join(
+                    region_dict, f"boot_{i:03d}_dict.mat"
+                ))
+            ]
+
+            if missing:
+                raise RuntimeError(
+                    f"{region}: missing dictionaries: {missing}"
+                )
+
+    else:
+
+        sample_dict = os.path.join(
+            dict_dir, "boot_000_dict.mat"
+        )
+
+        cmd4 = [
+            sys.executable,
+            os.path.join(
+                BRICK_DIR, "step4_dictionary.py"
+            ),
+            "--bootstrap_dir", boot_dir,
+            "--scale", mat2,
+            "--outdir", dict_dir,
+            "--n-iter", str(args.n_iter),
+            "--n-jobs", str(args.max_parallel_jobs)
+        ]
+
+        run_step(
+            cmd4,
+            sample_dict,
+            4 in to_run,
+            4
+        )
 
 
     # ========================================================
