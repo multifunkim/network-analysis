@@ -213,6 +213,13 @@ def main():
     )
 
     p.add_argument(
+        "--joint_l",
+        type=int,
+        default=5,
+        help="Joint whole-brain sparse-coding level"
+    )
+
+    p.add_argument(
         "--l-max",
         type=int,
         default=None,
@@ -776,6 +783,27 @@ def main():
             sample_dict,
             4 in to_run,
             4
+        )
+
+
+
+    # Whole-brain CIFTI: joint coding belongs to Step 4.
+    if (
+        4 in to_run
+        and input_format == "cifti"
+        and args.cifti_region == "whole"
+    ):
+        from brick.step4_dictionary import run_joint_cifti
+
+        logging.info(
+            "Step 4 joint whole-brain coding: L=%d",
+            args.joint_l
+        )
+
+        run_joint_cifti(
+            subject_dir=wd,
+            n_boot=args.nb_samps,
+            joint_l=args.joint_l
         )
 
 
