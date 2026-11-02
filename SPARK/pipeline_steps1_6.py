@@ -34,6 +34,7 @@ import glob
 import shlex
 import logging
 import argparse
+import ast
 import subprocess
 import sys
 
@@ -207,7 +208,7 @@ def main():
 
     p.add_argument(
         "--cifti_region",
-        choices=["whole", "cortex", "subcortex"],
+        # Accept legacy single modes and paired-region selections.
         default="whole",
         help="CIFTI analysis region"
     )
@@ -301,6 +302,45 @@ def main():
     )
 
     args = p.parse_args()
+
+    raw = args.cifti_region.strip()
+
+    if raw.startswith("["):
+        try:
+            selected_regions = ast.literal_eval(raw)
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError("Invalid CIFTI region list") from exc
+    elif "," in raw:
+        selected_regions = [
+            item.strip() for item in raw.split(",")
+        ]
+    else:
+        selected_regions = [raw]
+
+    if not isinstance(selected_regions, (list, tuple)):
+        raise ValueError("CIFTI selection must be a list")
+
+    if any(not isinstance(x, str) for x in selected_regions):
+        raise ValueError("CIFTI regions must be strings")
+
+    if (
+        not selected_regions
+        or len(selected_regions) != len(set(selected_regions))
+    ):
+        raise ValueError("Empty or duplicated CIFTI regions")
+
+    if set(selected_regions) == {"cortex", "subcortex"}:
+        args.cifti_region = "both"
+    elif (
+        len(selected_regions) == 1
+        and selected_regions[0]
+        in ("whole", "both", "cortex", "subcortex")
+    ):
+        args.cifti_region = selected_regions[0]
+    else:
+        raise ValueError(
+            f"Unsupported CIFTI selection: {selected_regions}"
+        )
 
 
     # ========================================================
@@ -474,11 +514,6 @@ def main():
         # Steps 3–6 will be upgraded subsequently.
         # Never run the legacy whole-brain downstream stages
         # accidentally with regional model-selection outputs.
-        if 6 in to_run:
-            raise NotImplementedError(
-                "Regional CIFTI Steps 3–6 are not implemented yet. "
-                "Use --steps 1 or --steps 2."
-            )
 
         logging.info(
             "Full-brain CIFTI detected: regional MDL enabled"
@@ -486,6 +521,10 @@ def main():
 
         selected_regions = {
             "whole": (
+                ("cortex", args.cortex_scales),
+                ("noncortex", args.noncortex_scales),
+            ),
+            "both": (
                 ("cortex", args.cortex_scales),
                 ("noncortex", args.noncortex_scales),
             ),
@@ -588,6 +627,7 @@ def main():
 
             selected = {
                 "whole": ("cortex", "noncortex"),
+            "both": ("cortex", "noncortex"),
                 "cortex": ("cortex",),
                 "subcortex": ("noncortex",),
             }[args.cifti_region]
@@ -680,6 +720,7 @@ def main():
 
         selected = {
             "whole": ("cortex", "noncortex"),
+            "both": ("cortex", "noncortex"),
             "cortex": ("cortex",),
             "subcortex": ("noncortex",),
         }[args.cifti_region]
@@ -807,190 +848,185 @@ def main():
         )
 
 
+
     # ========================================================
-    # STEP 5
-    # Spatial clustering across bootstrap dictionaries
+    # STEP 5 — Independent regional or joint spatial clustering
     # ========================================================
 
     if 5 in to_run and input_format == "cifti":
 
-        from brick.utils import get_cifti_region_indices
-
-        regions, _ = get_cifti_region_indices(args.fmri_path)
-
         if args.cifti_region == "whole":
-            if not all(len(regions[r]) for r in ("cortex", "noncortex")):
-                raise ValueError(
-                    "Whole mode requires cortex and noncortex."
-                )
-            target_dir = wd
-            scale_path = None
-
+            targets = [("whole", wd)]
+        elif args.cifti_region == "both":
+            targets = [
+                ("cortex", os.path.join(wd, "cortex")),
+                ("noncortex", os.path.join(wd, "noncortex")),
+            ]
         else:
             region = (
-                "cortex" if args.cifti_region == "cortex"
+                "cortex"
+                if args.cifti_region == "cortex"
                 else "noncortex"
             )
-            if not len(regions[region]):
+            targets = [(region, os.path.join(wd, region))]
+
+        for region, target_dir in targets:
+
+            dictionary_dir = os.path.join(target_dir, "dict")
+            clusters = os.path.join(target_dir, "clusters.mat")
+
+            dictionaries = sorted(glob.glob(
+                os.path.join(dictionary_dir, "boot_*_dict.mat")
+            ))
+
+            expected = [
+                f"boot_{i:03d}_dict.mat"
+                for i in range(args.nb_samps)
+            ]
+
+            if [os.path.basename(f) for f in dictionaries] != expected:
                 raise ValueError(
-                    f"CIFTI contains no {region} grayordinates."
+                    f"{region}: missing or unexpected dictionaries."
                 )
-            target_dir = os.path.join(wd, region)
-            scale_path = os.path.join(target_dir, "scale.mat")
 
-        dictionary_dir = os.path.join(target_dir, "dict")
-        cluster_path = os.path.join(target_dir, "clusters.mat")
+            cmd5 = [
+                sys.executable,
+                os.path.join(BRICK_DIR, "step5_clustering.py"),
+                "--dicts",
+                *dictionaries,
+            ]
 
-        dicts = sorted(glob.glob(
-            os.path.join(dictionary_dir, "boot_*_dict.mat")
-        ))
+            if region == "whole":
+                cmd5 += ["--k-from-dict"]
+            else:
+                scale = os.path.join(target_dir, "scale.mat")
 
-        expected = [
-            f"boot_{i:03d}_dict.mat"
-            for i in range(args.nb_samps)
-        ]
+                if not os.path.isfile(scale):
+                    raise FileNotFoundError(scale)
 
-        if [os.path.basename(d) for d in dicts] != expected:
-            raise ValueError(
-                f"Step 5 requires {args.nb_samps} consecutive "
-                f"dictionary files in {dictionary_dir}"
-            )
+                cmd5 += ["--scale", scale]
 
-        cmd5 = [
-            sys.executable,
-            os.path.join(BRICK_DIR, "step5_clustering.py"),
-            "--dicts",
-            *dicts,
-        ]
+            cmd5 += ["--out", clusters]
 
-        if scale_path is None:
-            cmd5 += ["--k-from-dict"]
-        else:
-            if not os.path.isfile(scale_path):
-                raise FileNotFoundError(scale_path)
-            cmd5 += ["--scale", scale_path]
-
-        cmd5 += ["--out", cluster_path]
-
-        logging.info(
-            "Step 5: CIFTI %s | %d dictionaries | %s",
-            args.cifti_region, len(dicts), cluster_path
-        )
-
-        run_step(cmd5, cluster_path, True, 5)
+            logging.info("Step 5 region: %s", region)
+            run_step(cmd5, clusters, True, 5)
 
     else:
-        # Preserve the existing NIfTI/GIFTI pipeline.
-        dicts = sorted(glob.glob(
+        # Original NIfTI/GIFTI behavior.
+        dictionaries = sorted(glob.glob(
             os.path.join(dict_dir, "*_dict.mat")
         ))
 
-        if 5 in to_run and not dicts:
+        if 5 in to_run and not dictionaries:
             raise FileNotFoundError(
-                f"No dictionary files found in {dict_dir}"
+                f"No dictionaries found in {dict_dir}"
             )
 
         cmd5 = [
             sys.executable,
             os.path.join(BRICK_DIR, "step5_clustering.py"),
             "--dicts",
-            *dicts,
+            *dictionaries,
             "--scale", mat2,
             "--out", mat5,
         ]
 
         run_step(cmd5, mat5, 5 in to_run, 5)
 
-
     # ========================================================
-    # STEP 6
-    # Atoms + k-hubness
+    # STEP 6 — Regional atoms and K-hubness
     # ========================================================
 
-    subj = os.path.basename(
-        os.path.normpath(wd)
-    )
+    subj = os.path.basename(os.path.normpath(wd))
 
-    kmap_dir = os.path.join(
-        wd,
-        f"KMAP_{subj}"
-    )
+    if 6 in to_run and input_format == "cifti":
 
-    os.makedirs(
-        kmap_dir,
-        exist_ok=True
-    )
+        if args.cifti_region == "whole":
+            targets = [("whole", wd)]
+        elif args.cifti_region == "both":
+            targets = [
+                ("cortex", os.path.join(wd, "cortex")),
+                ("noncortex", os.path.join(wd, "noncortex")),
+            ]
+        else:
+            region = (
+                "cortex"
+                if args.cifti_region == "cortex"
+                else "noncortex"
+            )
+            targets = [(region, os.path.join(wd, region))]
 
+        for region, target_dir in targets:
 
-    # --------------------------------------------------------
-    # Expected Step-6 output depends on input format
-    # --------------------------------------------------------
+            clusters = os.path.join(target_dir, "clusters.mat")
 
-    if input_format == "nifti":
+            if region == "whole":
+                tseries = mat1
+            else:
+                tseries = os.path.join(target_dir, "tseries.mat")
 
-        kmap_path = os.path.join(
-            kmap_dir,
-            f"k_hubness_{subj}.nii.gz"
+            for required in (clusters, tseries, mat1):
+                if not os.path.isfile(required):
+                    raise FileNotFoundError(required)
+
+            output_dir = os.path.join(
+                target_dir,
+                f"KMAP_{subj}"
+            )
+
+            os.makedirs(output_dir, exist_ok=True)
+
+            kmap = os.path.join(
+                output_dir,
+                f"k_hubness_{subj}.dscalar.nii"
+            )
+
+            cmd6 = [
+                sys.executable,
+                os.path.join(BRICK_DIR, "step6_kmap_atoms.py"),
+                "--clusters", clusters,
+                "--tseries", tseries,
+                "--reference_tseries", mat1,
+                "--pvalue", str(args.pvalue),
+                "--min_voxels", str(args.min_voxels),
+                "--outdir", output_dir,
+                "--subject_label", subj,
+            ]
+
+            logging.info("Step 6 region: %s", region)
+            run_step(cmd6, kmap, True, 6)
+
+    else:
+        # Original NIfTI/GIFTI behavior.
+        output_dir = os.path.join(wd, f"KMAP_{subj}")
+        os.makedirs(output_dir, exist_ok=True)
+
+        extension = (
+            "nii.gz" if input_format == "nifti"
+            else "func.gii" if input_format == "gifti"
+            else "dscalar.nii"
         )
 
-    elif input_format == "gifti":
-
-        kmap_path = os.path.join(
-            kmap_dir,
-            f"k_hubness_{subj}.func.gii"
+        kmap = os.path.join(
+            output_dir,
+            f"k_hubness_{subj}.{extension}"
         )
 
-    elif input_format == "cifti":
-
-        kmap_path = os.path.join(
-            kmap_dir,
-            f"k_hubness_{subj}.dscalar.nii"
-        )
-
-
-    # --------------------------------------------------------
-    # Step-6 command
-    # --------------------------------------------------------
-
-    cmd6 = [
-        sys.executable,
-        os.path.join(BRICK_DIR, "step6_kmap_atoms.py"),
-
-        "--clusters",
-        mat5,
-
-        "--tseries",
-        mat1,
-
-        "--pvalue",
-        str(args.pvalue),
-
-        "--min_voxels",
-        str(args.min_voxels),
-
-        "--outdir",
-        kmap_dir,
-
-        "--subject_label",
-        subj
-    ]
-
-
-    # NIfTI reconstruction requires the mask
-    if input_format == "nifti":
-
-        cmd6 += [
-            "--mask",
-            args.mask_path
+        cmd6 = [
+            sys.executable,
+            os.path.join(BRICK_DIR, "step6_kmap_atoms.py"),
+            "--clusters", mat5,
+            "--tseries", mat1,
+            "--pvalue", str(args.pvalue),
+            "--min_voxels", str(args.min_voxels),
+            "--outdir", output_dir,
+            "--subject_label", subj,
         ]
 
+        if input_format == "nifti":
+            cmd6 += ["--mask", args.mask_path]
 
-    run_step(
-        cmd6,
-        kmap_path,
-        6 in to_run,
-        6
-    )
+        run_step(cmd6, kmap, 6 in to_run, 6)
 
 
     # ========================================================

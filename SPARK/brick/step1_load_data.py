@@ -465,7 +465,7 @@ def main():
                     "grayordinate_indices": regional_spatial_index,
                     "idx_sub": regional_idx_sub,
                     "n_spatial_original": np.array(
-                        [[len(regions[region])]], dtype=np.int64
+                        [[n_spatial_original]], dtype=np.int64
                     ),
                     "n_spatial_retained": np.array(
                         [[len(pos)]], dtype=np.int64

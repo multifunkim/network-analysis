@@ -1108,6 +1108,12 @@ def main():
     )
 
     ap.add_argument(
+        "--reference_tseries",
+        default=None,
+        help="Original whole-brain CIFTI Step 1 metadata"
+    )
+
+    ap.add_argument(
         "--mask",
         default=None,
         help=(
@@ -1168,6 +1174,61 @@ def main():
     )
 
     K, V = C.shape
+
+
+    if args.reference_tseries:
+
+        if input_format != "cifti":
+            raise ValueError(
+                "--reference_tseries only supports CIFTI"
+            )
+
+        reference = loadmat(
+            args.reference_tseries,
+            variable_names=[
+                "grayordinate_indices",
+                "n_spatial_original",
+                "cifti_template",
+                "source_file",
+            ]
+        )
+
+        original_count = int(
+            np.asarray(
+                reference["n_spatial_original"]
+            ).squeeze()
+        )
+
+        region_indices = np.asarray(
+            tseries_mat["grayordinate_indices"],
+            dtype=np.int64
+        ).ravel()
+
+        full_indices = np.asarray(
+            reference["grayordinate_indices"],
+            dtype=np.int64
+        ).ravel()
+
+        if (
+            region_indices.size != V
+            or np.unique(region_indices).size != V
+            or not np.isin(region_indices, full_indices).all()
+            or np.any(region_indices < 0)
+            or np.any(region_indices >= original_count)
+        ):
+            raise ValueError(
+                "Regional centroids do not match original "
+                "CIFTI grayordinate mapping."
+            )
+
+        # Use the original CIFTI axis, even for regional atoms.
+        tseries_mat["n_spatial_original"] = np.array(
+            [[original_count]]
+        )
+
+        for key in ("cifti_template", "source_file"):
+            if key in reference:
+                tseries_mat[key] = reference[key]
 
     logging.info(
         "Detected original input format: %s",
