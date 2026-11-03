@@ -40,6 +40,7 @@ from pathlib import Path
 
 import numpy as np
 from scipy.io import loadmat
+from dyno_signed_atoms import save_signed_atoms
 
 
 # ============================================================
@@ -321,6 +322,18 @@ def main():
         required=True,
     )
 
+    parser.add_argument(
+        "--signed-atoms",
+        action="store_true",
+        help="Build signed final SPARK atoms.",
+    )
+
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace existing dyno signed-atom outputs.",
+    )
+
     args = parser.parse_args()
 
     subject_dir = Path(
@@ -394,6 +407,37 @@ def main():
 
     print()
     print("All dynoSPARK input checks passed.")
+
+    if args.signed_atoms:
+
+        dyno_dir = subject_dir / "dyno"
+
+        print()
+        print("Phase 2 — signed final spatial atoms")
+
+        for unit in units:
+
+            name = unit["name"]
+
+            output = dyno_dir / f"signed_atoms_{name}.mat"
+
+            result = save_signed_atoms(
+                unit_dir=unit["dir"],
+                output_path=output,
+                overwrite=args.overwrite,
+            )
+
+            print()
+            print(f"Unit             : {name}")
+            print(f"A_signed         : {result['A_signed'].shape}")
+            print(f"Cluster members  : {result['member_counts'].sum()}")
+            print(f"Sign flips       : {result['flip_counts'].sum()}")
+            print(f"Mean |cosine|    : {result['mean_abs_cosine'].mean():.4f}")
+            print(f"Saved            : {output}")
+
+        print()
+        print("Phase 2 completed.")
+
 
 
 if __name__ == "__main__":
