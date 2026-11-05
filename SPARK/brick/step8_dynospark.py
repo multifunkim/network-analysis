@@ -41,6 +41,9 @@ from pathlib import Path
 import numpy as np
 from scipy.io import loadmat
 from dyno_signed_atoms import save_signed_atoms
+from dyno_kappa import reconstruct_unit
+from scipy.io import savemat
+import json
 
 
 # ============================================================
@@ -334,6 +337,31 @@ def main():
         help="Replace existing dyno signed-atom outputs.",
     )
 
+    parser.add_argument(
+        "--reconstruct",
+        action="store_true",
+        help="Estimate kappa and reconstruct signed atom time series.",
+    )
+
+    parser.add_argument(
+        "--lambda-ratio",
+        type=float,
+        default=0.05,
+        help="L1 penalty relative to max |D.T X A.T|.",
+    )
+
+    parser.add_argument(
+        "--max-iter",
+        type=int,
+        default=5000,
+    )
+
+    parser.add_argument(
+        "--tol",
+        type=float,
+        default=1e-6,
+    )
+
     args = parser.parse_args()
 
     subject_dir = Path(
@@ -438,6 +466,147 @@ def main():
         print()
         print("Phase 2 completed.")
 
+
+
+    if args.reconstruct:
+
+        dyno_dir = subject_dir / "dyno"
+
+        # Verify all inputs and protect existing results
+        # before beginning an expensive reconstruction.
+        outputs = [
+            dyno_dir / f"dyno_{unit['name']}.mat"
+            for unit in units
+        ]
+
+        outputs += [
+            dyno_dir / "dyno_timeseries.mat",
+            dyno_dir / "reconstruction_metrics.json",
+            dyno_dir / "dyno_metadata.json",
+        ]
+
+        for unit in units:
+            signed_path = (
+                dyno_dir / f"signed_atoms_{unit['name']}.mat"
+            )
+            if not signed_path.is_file():
+                raise FileNotFoundError(
+                    f"Missing {signed_path}. Run --signed-atoms first."
+                )
+
+        if not args.overwrite:
+            for output in outputs:
+                if output.exists():
+                    raise FileExistsError(
+                        f"{output} exists; use --overwrite."
+                    )
+
+        print()
+        print("Phase 3 — temporal reconstruction")
+
+        results = []
+        metrics = {}
+
+        for unit in units:
+
+            name = unit["name"]
+            signed_path = dyno_dir / f"signed_atoms_{name}.mat"
+
+            D_final, kappa, info = reconstruct_unit(
+                unit,
+                signed_path,
+                lambda_ratio=args.lambda_ratio,
+                max_iter=args.max_iter,
+                tol=args.tol,
+            )
+
+            results.append((name, D_final, kappa))
+            metrics[name] = info
+
+            print()
+            print(f"Unit         : {name}")
+            print(f"D_final      : {D_final.shape}")
+            print(f"kappa        : {kappa.shape}")
+            print(f"Iterations   : {info['iterations']}")
+            print(f"Converged    : {info['converged']}")
+            print(f"KKT residual : {info['kkt_scaled_inf']:.3e}")
+            print(
+                "Energy explained: "
+                f"{info['fraction_energy_explained']:.4f}"
+            )
+
+        dyno_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save unit-specific outputs.
+        for name, D_final, kappa in results:
+            savemat(
+                dyno_dir / f"dyno_{name}.mat",
+                {
+                    "D_all_clusters": D_final,
+                    "kappa": kappa,
+                    "qc_status": "unreviewed",
+                },
+            )
+
+        # Concatenate units along the atom dimension.
+        combined = np.hstack([
+            result[1] for result in results
+        ])
+
+        unit_ranges = []
+        offset = 0
+
+        for name, D_final, _ in results:
+            end = offset + D_final.shape[1]
+            unit_ranges.append((offset, end))
+            offset = end
+
+        savemat(
+            dyno_dir / "dyno_timeseries.mat",
+            {
+                "D_all_clusters": combined,
+                "D_timeseries": combined,
+                "unit_names": np.asarray(
+                    [r[0] for r in results],
+                    dtype=object,
+                ),
+                "unit_ranges_zero_based": np.asarray(
+                    unit_ranges,
+                    dtype=np.int64,
+                ),
+                "qc_status": "unreviewed",
+            },
+        )
+
+        with open(
+            dyno_dir / "reconstruction_metrics.json",
+            "w",
+        ) as handle:
+            json.dump(metrics, handle, indent=2)
+
+        with open(
+            dyno_dir / "dyno_metadata.json",
+            "w",
+        ) as handle:
+            json.dump(
+                {
+                    "input_format": input_format,
+                    "units": [r[0] for r in results],
+                    "method": "FISTA_L1",
+                    "lambda_ratio": args.lambda_ratio,
+                    "source_dictionary": "boot_000",
+                    "temporal_order": "original",
+                    "signed_timecourses": True,
+                    "qc_status": "unreviewed",
+                },
+                handle,
+                indent=2,
+            )
+
+        print()
+        print(f"Combined D : {combined.shape}")
+        print(f"Saved to   : {dyno_dir}")
+        print("Phase 3 completed.")
 
 
 if __name__ == "__main__":
